@@ -1,0 +1,25 @@
+# Python and editor by-products
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.mypy_cache/
+.DS_Store
+Thumbs.db
+._*
+
+# Runtime logs, temporary files, and generated solver products
+*.log
+*.out
+*.err
+*.tmp
+greedy-procedure/Greedy/
+greedy-procedure/Greedy*/
+greedy-procedure/InitialHDMruns/
+greedy-procedure/hromruns*/
+greedy-procedure/evaluate/
+greedy-procedure/xdmf_files/
+
+# The supplied CRM mesh is 535 MB and has individual files above GitHub's
+# regular 100 MB limit. Install it locally as ./mesh; it is not versioned.
+/mesh
