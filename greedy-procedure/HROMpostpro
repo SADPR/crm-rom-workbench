@@ -1,0 +1,139 @@
+under Problem {
+   Type = SteadyNonlinearRomPostprocessing;
+   Mode = Dimensional;
+}
+
+under Input {
+   GeometryPrefix = "GreedyRuns/data/fluidmodel";
+   ReducedCoordinates = "GreedyRuns/evaluate/hromruns004/point001/postpro/ReducedCoords.out";
+   LaplaceSnapshotData = "GreedyRuns/Laplace-bin/ushift.bin";
+}
+
+under Output {
+   under Postpro {
+      Frequency = 0;
+      Prefix = "GreedyRuns/evaluate/hromruns004/point001/results/";
+      LiftandDrag = "../postpro/liftdrag.out";
+      Force = "../postpro/force.out";
+      PressureCoefficient = "PressureCoefficient.bin";
+      SkinFriction = "SkinFriction.bin";
+      Mach = "Mach.bin";
+      Displacement = "Displacement.bin";
+      Residual = "../postpro/Residual.out";
+   }
+   under Restart {
+      Prefix = "GreedyRuns/evaluate/hromruns004/point001/references/";
+      FilePackage = "";
+      RestartData = "";
+      Solution = "";
+      WallDistance = "";
+      LimiterPhi = "";
+      Fixes = "";
+   }
+   under NonlinearROM {
+      Prefix = "GreedyRuns/evaluate/hromruns004/point001/postpro/";
+      ReducedCoordinates = "";
+      ReducedResidual = "";
+      ReducedJacobian = "";
+   }
+}
+
+under NonlinearRomFileSystem {
+   Prefix = "GreedyRuns/reductionrun004/";
+   NumClusters = 1;
+   TopLevelDirectory = "nonlinearrom";
+   under Files {
+      StatePrefix = "state";
+   }
+}
+
+under NonlinearRomOnline {
+   Projection = LeastSquaresPetrovGalerkin;
+   ComponentScaling = True;
+   LeastSquaresSolver = NormalEquations;
+   ShiftVectorType = Laplace;
+   SystemApproximation = ECSW;
+   MaximumEnergy = 0.999999999;
+   MaximumDimension = 1000;
+}
+
+under Equations {
+   Type = NavierStokes;
+   under FluidModel[0] {
+      Fluid = PerfectGas;
+      PressureCutOff = -1000000000.0;
+      DensityCutOff = -1000000000.0;
+      VerifyClipping = Off;
+   }
+   under TurbulenceClosure {
+      Type = TurbulenceModel;
+      under TurbulenceModel {
+         Type = SpalartAllmaras;
+      }
+   }
+   under ThermalConductivityModel {
+      Type = ConstantPrandtl;
+      Prandtl = 0.72;
+   }
+   under ViscosityModel {
+      Type = Sutherland;
+      SutherlandConstant = 1.458e-06;
+      SutherlandReferenceTemperature = 110.6;
+   }
+}
+
+under BoundaryConditions {
+   under Inlet {
+      Mach = 0.4;
+      Beta = 2.0;
+      Alpha = 0;
+      Pressure = 22632.0;
+      Density = 0.3639;
+   }
+   under Wall {
+      Type = Adiabatic;
+      Integration = Full;
+   }
+   under Symmetry {
+      Treatment = Weak;
+   }
+}
+
+under Space {
+   under NavierStokes {
+      Flux = Roe;
+      Reconstruction = Linear;
+      Limiter = Venkatakrishnan;
+      Gradient = LeastSquares;
+      Beta = 0.5;
+      Gamma = 1.0;
+      PreComputeLimiter = Off;
+   }
+   under TurbulenceModel {
+      Reconstruction = Linear;
+      Limiter = VanAlbada;
+      Gradient = LeastSquares;
+      Beta = 0.5;
+      Gamma = 1.0;
+      PreComputeLimiter = Off;
+   }
+}
+
+under Time {
+   CheckPressure = On;
+   CheckDensity = On;
+   Form = NonDescriptor;
+   MaxIts = 100;
+   Eps = 1e-10;
+   under Implicit {
+      Type = SpatialOnly;
+      MatrixVectorProduct = Exact;
+      ExactImplementation = New;
+      TurbulenceModelCoupling = Strong;
+      under Newton {
+         MaxIts = 30;
+         FailSafe = AlwaysOn;
+         Eps = 1e-06;
+      }
+   }
+}
