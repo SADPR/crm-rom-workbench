@@ -123,8 +123,8 @@ contains another user's:
 - Conda environment assumptions.
 
 It requests 10 nodes with 24 tasks per node, while an individual HDM uses 120
-MPI processes. The appropriate request for the isolated baseline should be
-chosen after confirming the current Sherlock node layout and partition rules.
+MPI processes. The isolated baseline instead requests exactly 120 tasks as
+five nodes with 24 tasks per node.
 
 ## Sherlock AERO-F core build
 
@@ -178,6 +178,12 @@ one-point driver with two explicit modes:
 
 It uses a separate `BaselineRuns/` directory and never updates the production
 greedy snapshot catalogs.
+
+Submit `greedy-procedure/submit_baseline_steady.sbatch` from the
+`greedy-procedure/` directory only after preparation succeeds. It records the
+Slurm allocation, loaded modules, Python version, executable path, and Git
+revision in `BaselineRuns/job_<job-id>.env`, then uses `srun` for the two HDM
+steps. Its logs remain with the baseline outputs and are ignored by Git.
 
 The controlled point is:
 
