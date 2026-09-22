@@ -12,8 +12,9 @@
 
 set -euo pipefail
 
-repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-work_dir="${repo_dir}/greedy-procedure"
+# Slurm executes a spool copy of this file; use the submission directory instead.
+work_dir=${SLURM_SUBMIT_DIR:?Submit this script from greedy-procedure/.}
+repo_dir=$(cd "${work_dir}/.." && pwd)
 cd "${work_dir}"
 
 [[ -f BaselineRuns/HDMrun001/input1 ]] || {
