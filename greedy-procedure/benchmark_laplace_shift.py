@@ -65,20 +65,28 @@ def run(baseline):
     deformed_top = Path(manifest['deformed_top'])
     xdmf_dir = run_dir / 'xdmf_files'
     laplace_dir = run_dir / 'Laplace-bin'
+    stem = deformed_top.stem
+    u_star = xdmf_dir / '{}-u_star.xpost'.format(stem)
+    u_shift = laplace_dir / '{}-u_shift.xpost'.format(stem)
     expected = laplace_dir / 'ushift.bin001'
     if expected.exists():
         raise RuntimeError('{} exists; refusing to overwrite it.'.format(expected))
 
-    subprocess.run(
-        ['./run_laplace_shift.sh', str(deformed_top), str(xdmf_dir),
-         str(manifest['laplace_num_proc'])],
-        check=True,
-    )
+    if u_star.is_file():
+        print('Reusing {}'.format(u_star))
+    else:
+        subprocess.run(
+            ['./run_laplace_shift.sh', str(deformed_top), str(xdmf_dir),
+             str(manifest['laplace_num_proc'])],
+            check=True,
+        )
 
-    stem = deformed_top.stem
-    u_star = xdmf_dir / '{}-u_star.xpost'.format(stem)
-    laplace_dir.mkdir()
-    u_shift = ushiftXPOST(str(u_star), 'SpalartAllmaras', folder_name='{}/'.format(laplace_dir))
+    laplace_dir.mkdir(exist_ok=True)
+    if u_shift.is_file():
+        print('Reusing {}'.format(u_shift))
+    else:
+        u_shift = Path(ushiftXPOST(
+            str(u_star), 'SpalartAllmaras', folder_name='{}/'.format(laplace_dir)))
 
     settings = Settings()
     frg = pyaeroopt.interface.Frg(
@@ -86,7 +94,7 @@ def run(baseline):
         geom_pre='BaselineRuns/data/{}'.format(settings.GeometryPrefix),
     )
     frg.sower_fluid_split(
-        file2split=u_shift,
+        file2split=str(u_shift),
         out='{}/ushift.bin'.format(laplace_dir),
         nclust=settings.HDMnclust,
         log='{}/log.sower'.format(run_dir),

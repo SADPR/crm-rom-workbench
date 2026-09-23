@@ -16,6 +16,7 @@ separate from GreedyAEROF, which runs the workflow and AERO-F:
 To measure the nominal shift without touching its converged HDM outputs:
 
   cd /scratch/users/sadpr/Code3Aug/crm-rom-workbench/greedy-procedure
+  module load gcc/10.1.0
   conda activate GreedyAEROF
   export CRM_CONDA_BASE=/scratch/users/sadpr/Code3Aug/miniconda3
   export CRM_LAPLACE_ENV=CRM_Laplace
