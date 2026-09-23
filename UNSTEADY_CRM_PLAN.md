@@ -1,187 +1,238 @@
-# CRM Unsteady ROM Work Plan
+# CRM ROM Work Plan
 
 ## Objective
 
-Convert the current steady CRM HDM/ROM/HROM workflow into an unsteady
-workflow while preserving the existing structure and changing as little of
-the supplied code as practical.
-
-The conversion will be performed and validated in stages. The complete
-greedy pipeline will not be modified until a single unsteady HDM case has
-been demonstrated to run correctly.
+Build and validate the reduced-order workflow incrementally. The immediate
+objective is a steady global PROM for the current three-dimensional active
+parameter space. Unsteady URANS, a second temporal PROM, local bases, nonlinear
+manifolds, and hyperreduction remain later stages and will only be introduced
+after the simpler model is understood.
 
 ## Working locations
 
-- Edit and version the code in `/home/sares/crm-rom-workbench`.
-- Use `/home/sares/Sherlock_CRM` only to inspect the read-only SSHFS view of
-  the Sherlock execution clone and its results.
-- Compile AERO-F and submit jobs from a regular SSH session on Sherlock, not
-  through SSHFS.
-- Keep generated meshes, binaries, snapshots, and simulation results out of
-  Git.
+- Edit and version code in `/home/sares/crm-rom-workbench`.
+- Use `/home/sares/Sherlock_CRM` only to inspect the Sherlock execution clone
+  and its results through SSHFS.
+- Compile AERO-F, postprocess large files, and submit simulations from a
+  regular Sherlock session, not through SSHFS.
+- Keep meshes, binaries, snapshots, Exodus files, and simulation outputs out
+  of Git.
+- Use `/home/sares/hgv2-rom-workbench` as a technical reference for proven
+  AERO-F, SOWER, xp2exo, PROM, and HROM procedures. Adapt those procedures to
+  this case without coupling the two repositories.
 
 ## Guiding principles
 
-- Use the current upstream AERO-F input style as the reference.
-- Preserve the steady workflow until the unsteady path is independently
-  validated.
-- Prefer small, local changes over reorganizing or broadly refactoring the
-  existing scripts.
-- Validate every stage before modifying the next one.
-- Keep HDM, ROM, and HROM physical-time settings consistent.
-- Preserve backward compatibility for users of the existing steady workflow.
+- Use current upstream AERO-F behavior and naming as the primary reference.
+- Preserve the supplied steady workflow and change as little code as practical.
+- Add isolated drivers before modifying the production greedy workflow.
+- Validate each stage before adding the next layer of complexity.
+- Begin with a global linear model. Introduce local, piecewise, or nonlinear
+  models only when measured errors justify them.
+- Separate accuracy validation from speed validation: PROM first, HROM second.
+- Preserve backward compatibility for current steady AERO-F users.
 
-## Decision required before implementation
+## Current verified state
 
-The intended source of unsteadiness must be defined. Possible interpretations
-include:
+- The nominal parameter point is
+  `[0.5, 0.0, 0.45, 0.03, 0.12]`.
+- The private mesh and 120-way decomposition are installed on Sherlock.
+- AERO-F was built from commit
+  `069ef9d8e904746652d94d062a5958e77e0686df`.
+- Sherlock job `44737107` completed the isolated two-step steady HDM.
+- The restarted solve reached residual `4.983595e-07` at iteration 2245.
+- The distributed flow fields, restart data, state snapshots, and force
+  histories are preserved under `greedy-procedure/BaselineRuns/`.
 
-1. A startup transient from freestream to the developed flow.
-2. A perturbation of an existing steady solution.
-3. A forced response such as a gust, prescribed pitch, or moving geometry.
-4. An intrinsically unsteady flow at fixed geometry and boundary conditions.
+## Stage 0: Close and inspect the steady baseline
 
-Starting from a converged steady solution with unchanged boundary conditions
-may produce an almost constant trajectory. The expected physical transient
-and the quantities of interest should therefore be confirmed before selecting
-the final time horizon and training data.
+The existing solution must be examined physically before choosing training
+points.
 
-## Stage 0: Record the steady baseline
+1. Merge the distributed AERO-F fields with SOWER:
+   - Mach,
+   - pressure coefficient,
+   - skin-friction coefficient,
+   - velocity,
+   - displacement.
+2. Convert the merged XPOST fields to an Exodus file with xp2exo and the
+   120-way mesh decomposition.
+3. Open the Exodus result in ParaView and inspect:
+   - the deformed airfoil geometry,
+   - freestream orientation,
+   - Mach and pressure-coefficient fields,
+   - boundary-layer and skin-friction behavior,
+   - whether a shock is present and, if so, its location,
+   - symmetry and far-field behavior,
+   - finite values and obvious discontinuities caused by setup errors.
+4. Review the residual, lift/drag, and force histories together with the flow
+   field.
+5. Record screenshots or observations needed to identify the physical regime.
 
-Before changing the workflow:
+### Stage 0 acceptance checks
 
-- Record the AERO-F revision and build configuration used on Sherlock.
-- Identify one nominal CRM parameter point.
-- Preserve its generated steady input file, convergence history, force
-  history, and final solution.
-- Record the current processor layout and wall-clock cost.
-- Confirm that the current workflow can reproduce the baseline.
+- The Exodus output opens without mesh or variable errors.
+- The expected fields are present on the complete 812,098-node mesh.
+- The displayed geometry agrees with
+  `[maximum-camber location, maximum camber, thickness] =
+  [0.45, 0.03, 0.12]`.
+- The solution is finite and physically plausible.
+- The converged field, inputs, logs, and runtime metadata remain reproducible
+  and isolated from the production greedy directories.
 
-This baseline will distinguish pre-existing behavior from errors introduced
-by the unsteady conversion.
+No training design begins until these checks are complete.
 
-## Stage 1: Run one short unsteady HDM pilot
+## Stage 1: Define steady training and validation points
 
-Modify only the input generation needed for one nominal full-order case:
+After inspecting the nominal field:
 
-- Change the AERO-F problem type from `Steady` to `Unsteady`.
-- Add explicit physical-time controls:
-  - time step,
-  - final time,
-  - maximum number of time steps,
-  - time integration scheme,
-  - nonlinear tolerance and iterations per time step.
-- Select and document the initial condition.
-- Write force histories, restart files, and state snapshots at explicit
-  frequencies.
-- Begin with a short time horizon so input and runtime failures are cheap to
-  diagnose.
+- Confirm the three active parameters:
+  Mach number, angle of attack, and maximum-camber location.
+- Keep maximum camber and thickness fixed for the first ROM.
+- Normalize the three active coordinates before computing parameter-space
+  distances.
+- Choose a space-filling training design, with Sobol sampling as the initial
+  candidate.
+- Reserve independent validation points that are never used to build the
+  basis.
+- Include enough boundary and physically difficult cases to exercise moving
+  shocks or strong gradients observed in Stage 0.
+- Run one non-nominal point as an end-to-end smoke test before launching the
+  full campaign.
 
-The first pilot should use a single parameter point and the existing CRM
-partitioning. It should not invoke POD, ROM, HROM, or the greedy algorithm.
+The final sample count will be selected after considering the measured cost
+and physics. A count such as 27 is a pilot, not an accuracy guarantee; powers
+of two are natural when retaining the balance properties of a Sobol sequence.
 
-### Stage 1 acceptance checks
+## Stage 2: Build the steady HDM database
 
-- AERO-F accepts the generated input without warnings caused by unsupported
-  or inconsistent options.
-- The time integration advances for the requested physical time.
-- Residual and force histories are finite and physically plausible.
-- Restart output can be read successfully.
-- `State.bin` contains a time trajectory rather than one final state.
-- Snapshot indices and physical times can be mapped unambiguously.
+For every training parameter:
 
-## Stage 2: Generalize unsteady HDM generation
+- Deform the mesh without changing its topology or node correspondence.
+- Execute the same reviewed two-step steady solve used by the baseline.
+- Require the final solve to meet the selected convergence tolerance.
+- Store exactly one converged steady state for the initial steady POD.
+- Record parameters, convergence, forces, allocation, runtime, and output
+  paths.
+- Keep failed attempts separate and exclude them from snapshot catalogs.
 
-After the pilot is stable:
+Run the independent validation HDMs with the same settings, but do not include
+their states in the training snapshot matrix.
 
-- Place the unsteady controls in `greedy-procedure/setup.py`.
-- Make the smallest necessary changes to the HDM input generator in
-  `greedy-procedure/runs.py`.
-- Retain the steady path for regression testing.
-- Define snapshot start, end, frequency, and any discarded startup interval.
-- Replace the current single-state snapshot entry with a temporal range.
-- Ensure repeated or restarted runs cannot silently duplicate snapshot
-  metadata.
+## Stage 3: Diagnose the global steady POD space
 
-HDM output frequency and snapshot frequency should be chosen independently:
-human-readable postprocessing does not need to be written as frequently as
-ROM training states.
+Assemble
 
-## Stage 3: Build the unsteady state basis
+```text
+S = [U(mu_1), U(mu_2), ..., U(mu_N)]
+```
 
-- Assemble state trajectories from one or more parameter points.
-- Decide whether initial transients belong in the training set.
-- Verify temporal and parametric weighting so long trajectories do not
-  dominate merely because they contain more snapshots.
-- Run the existing POD preprocessing with the new snapshot catalog.
-- Check singular-value decay, retained energy, basis dimension, and
-  reconstruction error.
+and then:
 
-The POD implementation should be reused unless the unsteady data reveals a
-specific incompatibility.
+- choose and document the reference or centering convention,
+- compute the singular-value decay and retained energy,
+- measure reconstruction error for every training and validation state,
+- inspect field errors near shocks, walls, and geometric deformations,
+- determine whether a modest global linear basis is adequate.
 
-## Stage 4: Validate an unsteady ROM
+Slow singular-value decay or localized shock-position errors are evidence for
+a later local or nonlinear model; they are not reasons to skip the global
+baseline.
 
-- Generate an `UnsteadyNonlinearRom` input.
-- Use the same initial condition, time step, final time, integrator, and
-  boundary conditions as the corresponding HDM.
-- Initially test a training parameter point.
-- Compare state error and relevant quantities of interest over the complete
-  trajectory.
-- Then test at least one parameter point not used to build the basis.
+## Stage 4: Build and validate the steady global PROM
 
-ROM validation should precede all unsteady HROM changes.
+Construct the steady PROM by projecting the steady residual:
 
-## Stage 5: Validate an unsteady HROM
+```text
+V_s^T R(U_ref + V_s q_s; mu) = 0.
+```
 
-- Reuse the existing hyperreduction workflow where compatible.
-- Verify that residual snapshots represent the intended temporal window.
-- Confirm the spatial training/stacking assumptions used by the current
-  ECSW configuration.
-- Generate an `UnsteadyNonlinearRom` input with reduced geometry.
-- Compare HDM, ROM, and HROM trajectories and quantities of interest.
-- Measure both accuracy and runtime reduction.
+Validation order:
 
-## Stage 6: Define the unsteady greedy indicator
+1. reproduce training parameters,
+2. solve at independent validation parameters,
+3. compare HDM and PROM residuals,
+4. compare state and projection errors,
+5. compare pressure coefficient, Mach, lift, drag, and shock location,
+6. record convergence behavior and cost.
 
-The current steady indicator cannot be adopted blindly because it represents
-one solution state. Define a trajectory-level scalar for ranking candidate
-parameters. Candidates include:
+At this stage the PROM may still evaluate the full HDM residual. The objective
+is accuracy and robustness, not yet maximum speedup.
 
-- maximum residual indicator over time,
-- time-averaged residual indicator,
-- time-integrated residual indicator,
-- maximum or integrated error in a selected quantity of interest.
+## Stage 5: Build and validate the steady HROM
 
-The chosen indicator should state explicitly:
+Only after the steady PROM is accurate:
 
-- the temporal window,
-- any transient discarded from the comparison,
-- normalization,
-- aggregation across time,
-- behavior when a simulation fails or terminates early.
+- generate the required residual and training snapshots,
+- apply the existing hyperreduction procedure,
+- compare HDM, PROM, and HROM at the same validation points,
+- measure both error and wall-clock speedup,
+- verify that sampled meshes and weights remain valid across geometry changes.
 
-Only after this definition is validated should
-`greedy-procedure/GreedyAlgorithm.py` be changed.
+## Stage 6: Introduce local, piecewise, or nonlinear models if justified
 
-## Stage 7: Regression and compatibility checks
+Use the global-model evidence to decide whether to introduce:
 
-Before considering the conversion complete:
+- clustered/local POD bases,
+- piecewise PROMs,
+- quadratic or other nonlinear manifolds,
+- GPR, ANN, or RBF mappings,
+- local HROM construction.
 
-- Re-run the preserved steady reference case.
-- Run the unsteady HDM, ROM, and HROM cases from clean directories.
-- Test restart behavior.
-- Check all generated input files for unintended differences.
-- Confirm that default steady users do not read unsteady-only files or
-  require new settings.
-- Confirm that generated data and binaries remain ignored by Git.
-- Review the final diff against the original repository for unnecessary
-  renaming, movement, comments, or formatting changes.
+Each addition must be compared against the global steady PROM with identical
+training and validation data. Complexity is justified only by a measurable
+gain in accuracy, robustness, or cost.
 
-## First implementation milestone
+## Stage 7: Define the unsteady physical problem
 
-The first milestone is intentionally narrow:
+Unsteady work begins only after the steady pipeline is reliable.
 
-> Generate and run one short, physically defined, unsteady CRM HDM trajectory
-> on Sherlock and verify its time history and snapshots.
-No ROM/HROM or greedy change is part of this milestone.
+The parameters remain fixed during each trajectory unless the scientific
+problem is explicitly changed. For fixed `mu`, determine:
+
+- whether the intended model is autonomous URANS,
+- the initial steady state and controlled perturbation,
+- whether perturbations decay or lead to persistent dynamics,
+- physical time step, horizon, integration scheme, and output frequency,
+- the quantities of interest and temporal window.
+
+A short URANS stability pilot at a few parameter points must precede any
+unsteady training campaign.
+
+## Stage 8: Build a hierarchical steady/unsteady ROM
+
+The preferred long-term architecture is:
+
+```text
+mu -> steady PROM -> steady base flow -> unsteady fluctuation PROM
+```
+
+For a fixed online parameter, the steady PROM supplies
+`U_steady_ROM(mu)`. The temporal model then represents
+
+```text
+U(t; mu) = U_steady_ROM(mu) + V_u q_u(t; mu).
+```
+
+This separates parametric variation of the equilibrium from temporal
+fluctuations. IDW may be retained as an inexpensive initial guess for the
+steady reduced coordinates, but it need not replace the physics-based steady
+PROM.
+
+## Stage 9: Unsteady HROM and trajectory-level greedy logic
+
+After validating the unsteady HDM and PROM:
+
+- construct and validate the unsteady HROM,
+- preserve identical physical-time settings across HDM, PROM, and HROM,
+- define temporal snapshot weighting,
+- define a trajectory-level greedy indicator,
+- test restarts and reproducibility,
+- confirm that all steady paths remain unchanged.
+
+## Immediate milestone
+
+> Generate and inspect the Exodus postprocessing of the completed nominal
+> steady HDM. Then define the steady training and validation design.
+
+No unsteady input or greedy-algorithm change belongs to this milestone.
