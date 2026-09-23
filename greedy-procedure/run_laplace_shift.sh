@@ -49,7 +49,12 @@ python - <<'PY'
 import fenics
 import h5py
 import meshio
-print("FEniCS:", fenics.__version__)
+try:
+    import dolfin
+    fenics_version = getattr(dolfin, "__version__", "available")
+except ImportError:
+    fenics_version = getattr(fenics, "__version__", "available")
+print("FEniCS:", fenics_version)
 print("h5py:", h5py.__version__)
 print("meshio:", meshio.__version__)
 PY
