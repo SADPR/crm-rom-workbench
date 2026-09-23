@@ -60,8 +60,12 @@ print("meshio:", meshio.__version__)
 PY
 
 export OMPI_MCA_opal_cuda_support=0
+# The interactive Slurm shell exports both PMI and PMIx variables.  Hydra
+# supplies its own PMI state when it forks the single-node worker processes.
+unset PMI_FD PMI_RANK PMI_SIZE PMIX_NAMESPACE PMIX_RANK
 start_time=$(date +%s)
-mpirun -np "${mpi_ranks}" python "${solver}" "${top_file}" --output-dir "${output_dir}"
+mpiexec -launcher fork -n "${mpi_ranks}" \
+  python "${solver}" "${top_file}" --output-dir "${output_dir}"
 elapsed=$(( $(date +%s) - start_time ))
 
 if [[ ! -s "${expected_xpost}" ]]; then
