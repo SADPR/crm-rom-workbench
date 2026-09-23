@@ -64,9 +64,10 @@ class Settings:
         self.rbf_dimVmax = 50 # maximum dim(V), rest is dim(\bar V)
         self.rbf_pctVdim = 0.95 # percentage of dim(V_total) to use as dim(V), the rest is dim(\bar V)
 
-        # Options: 'None', 'FreeStream', 'FreeStreamBC', 'Laplace' 
-        self.ShiftType = 'None'
-        self.LaplaceShiftEach = False # If True, a dedicated Laplace shift is applied for each HDM/ROM
+        # Options: 'None', 'FreeStream', 'FreeStreamBC', 'Laplace'
+        self.ShiftType = 'Laplace'
+        # Use the Laplace field of each deformed airfoil for its HDM/ROM state.
+        self.LaplaceShiftEach = True
         self.LaplaceNumProc = 24 # Number of processors to use for solving each Laplace problem for the shift
         
         ###############################################################################

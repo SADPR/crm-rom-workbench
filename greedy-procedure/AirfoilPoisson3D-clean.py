@@ -1,3 +1,5 @@
+import argparse
+
 import fenics as fe
 # from mpi4py import MPI
 import meshio
@@ -313,26 +315,23 @@ if __name__ == "__main__":
 
     if rank == 0: print(f"Number of MPI processor: {size}", flush=True)
 
-    # Parse command-line arguments
-    if len(sys.argv) < 2:
-        if rank == 0:
-            print("Usage: python AirfoilPoisson3D-clean.py <top_filename>", flush=True)
-            print("Example: python AirfoilPoisson3D-clean.py naca0012_Re1p5.top", flush=True)
-        sys.exit(1)
-    
-    top_filename = sys.argv[1]
+    parser = argparse.ArgumentParser()
+    parser.add_argument("top_filename")
+    parser.add_argument("--output-dir", default=None)
+    args = parser.parse_args()
+
+    top_filename = args.top_filename
     top_file = os.path.join(top_filename)
     
     # Extract just the filename (without path) for use in output file naming
     top_filename_only = os.path.basename(top_filename)
     
-    if "/" in top_file:
+    if args.output_dir is not None:
+        xdmf_folder = args.output_dir
+    elif "/" in top_file:
         xdmf_folder = top_file[:top_file.rfind("/")] + "/xdmf_files"
     else:
         xdmf_folder = "./xdmf_files"
-    
-    # overwrite xdmf_folder
-    xdmf_folder = "HDM/xdmf_files"
 
     if rank == 0: print(f"Processing mesh file: {top_file}", flush=True)
     

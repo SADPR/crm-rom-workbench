@@ -60,18 +60,17 @@ def create_deformed_top_file(current_sim_dir, topfilepath):
 def solveCurrentLaplace(deformed_top_file, SuperDir, frg, settings, numproc=24):
     Laplace_bin_Dir = "{}/Laplace-bin/".format(SuperDir)
     xdmf_dir = "{}/xdmf_files/".format(SuperDir)
-    
+
     os.makedirs(xdmf_dir, exist_ok=True)
-    
-    # Run FEniCS Poisson solver in fenics conda environment
+
+    laplace_runner = os.environ.get('CRM_LAPLACE_RUNNER', './run_laplace_shift.sh')
     with open('{}log.Laplace'.format(SuperDir), 'w') as log_file:
-        subprocess.run(f'''
-            eval "$($HOME/miniconda3/bin/conda shell.bash hook)"
-            conda activate fenics
-            module load openmpi
-            mpirun -np {numproc} --mca opal_cuda_support 0 python3 AirfoilPoisson3D-clean.py {deformed_top_file}
-            conda deactivate
-        ''', shell=True, executable='/bin/bash', stdout=log_file, stderr=subprocess.STDOUT)
+        subprocess.run(
+            [laplace_runner, deformed_top_file, xdmf_dir, str(numproc)],
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            check=True,
+        )
 
     u_shift_xpost = get_ushift_file(deformed_top_file, xdmf_dir, hrmesh_nodes=None, u_star_path=xdmf_dir)
     Laplace_ushiftsnapdata(settings, frg, u_shift_xpost, Laplace_bin_Dir, False)
