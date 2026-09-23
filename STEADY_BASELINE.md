@@ -1,7 +1,7 @@
 # Steady Baseline Record
 
-Status: in progress. No AERO-F simulation has been submitted from this
-repository yet.
+Status: steady solve complete; Exodus postprocessing and physical inspection
+are pending.
 
 This record describes the supplied steady workflow before any unsteady
 scientific changes are made.
@@ -194,6 +194,44 @@ The controlled point is:
 That case must use its own output directory and must not update the production
 greedy snapshot catalogs.
 
+## Completed baseline run
+
+Sherlock job `44737107` ran on five `cfarhat` nodes with 120 MPI tasks.
+The first solve reached residual `1.960860e-04` after its configured 1,500
+iterations and produced the restart used by the second solve. The restarted
+finite-difference solve reached residual `4.983595e-07` at iteration 2245.
+The two AERO-F solves required approximately 25 minutes in total.
+
+The final raw `liftdrag.out` record is:
+
+```text
+2245 5.314695e-04 1 1 3.734544e+01 1.577915e+03 2.591830e-02
+```
+
+The record is preserved here without assigning physical meanings or units to
+individual columns until the corresponding AERO-F output definition is
+confirmed.
+
+The run produced 120 distributed files for each requested field, along with
+restart data, solution data, state snapshots, residual history, force history,
+both reviewed input files, and the Slurm environment record.
+
+## Baseline visualization
+
+`greedy-procedure/postprocess_baseline_steady.sh` is an isolated
+postprocessing driver for the completed run. On a Sherlock compute node it:
+
+1. merges Mach, pressure coefficient, skin friction, velocity, and
+   displacement with SOWER;
+2. passes the merged XPOST fields and
+   `mesh/naca0012_Re1p5.top.dec.120` to xp2exo;
+3. writes the ignored Exodus output under
+   `BaselineRuns/HDMrun001/postpro/`.
+
+It does not modify the inherited `xp2exo.sh`, which is hard-coded for an old
+HROM result directory. Existing nonempty XPOST or Exodus outputs are retained
+instead of being overwritten.
+
 ## Baseline acceptance checks
 
 - [x] Preserve the imported Git revision.
@@ -202,8 +240,10 @@ greedy snapshot catalogs.
 - [x] Create and verify a private mesh copy on Sherlock.
 - [ ] Confirm that `naca0012_Re1p5` is the intended case.
 - [x] Build and record our core AERO-F executable on Sherlock.
-- [ ] Generate and review one isolated nominal steady HDM input.
-- [ ] Run the nominal case to the requested steady tolerance.
-- [ ] Record the generated input, residual history, force history, restart,
+- [x] Generate and review one isolated nominal steady HDM input.
+- [x] Run the nominal case to the requested steady tolerance.
+- [x] Record the generated input, residual history, force history, restart,
       final solution, allocation, and wall time.
+- [ ] Generate and open the baseline Exodus postprocessing.
+- [ ] Record the physical inspection of the geometry and flow fields.
 - [ ] Repeat or restart the run to confirm reproducibility.
