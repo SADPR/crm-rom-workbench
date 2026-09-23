@@ -31,7 +31,7 @@ def prepare(baseline):
     shutil.copy2(baseline / 'deform/Position.xpost', run_dir / 'deform/Position.xpost')
 
     settings = Settings()
-    deformed_top = create_deformed_top_file(str(run_dir), settings.TopFilePath)
+    deformed_top = create_deformed_top_file('{}/'.format(run_dir), settings.TopFilePath)
     manifest = {
         'baseline': str(baseline),
         'deformed_top': deformed_top,
