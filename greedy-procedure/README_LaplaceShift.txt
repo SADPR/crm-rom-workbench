@@ -31,9 +31,7 @@ ushift.bin120.  It refuses to overwrite an existing benchmark.
 After the benchmark succeeds, prepare a one-iteration AERO-F read check:
 
   python3 -B benchmark_laplace_shift.py prepare-aerof-check
-  srun -N 5 -n 120 "${AEROF}" \
-      BaselineRuns/HDMrun001/laplace/aerof-check/input_laplace \
-      > BaselineRuns/HDMrun001/laplace/aerof-check/log 2>&1
+  sbatch submit_baseline_laplace_check.sbatch
 
 The check starts from the converged nominal solution, writes only below
 laplace/aerof-check/, and must report that it loaded the Laplace unit solution.
