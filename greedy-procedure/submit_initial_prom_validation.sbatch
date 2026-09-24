@@ -30,7 +30,7 @@ module load cmake/3.24.2 gcc/10.1.0 openmpi/4.1.2 imkl/2019
 source /scratch/users/sadpr/Code3Aug/miniconda3/etc/profile.d/conda.sh
 conda activate GreedyAEROF
 
-export AEROF=/scratch/users/sadpr/Code3Aug/aero-f/build-core/bin/aerof.opt
+export AEROF=/scratch/users/sadpr/Code3Aug/aero-f/build-scalapack/bin/aerof.opt
 export SOWER=/home/groups/cfarhat/bin/sower
 export MPI=srun
 export CRM_CONDA_BASE=/scratch/users/sadpr/Code3Aug/miniconda3
@@ -47,5 +47,13 @@ export MKL_NUM_THREADS=1
     exit 1
 }
 
-python3 -B validate_initial_prom.py prepare
+validation_mode=${1:-full}
+if [[ "${validation_mode}" == full ]]; then
+    python3 -B validate_initial_prom.py prepare
+elif [[ "${validation_mode}" != resume ]]; then
+    echo "Usage: sbatch $0 [full|resume]" >&2
+    exit 1
+fi
+
+# Resume reuses a completed online preparation after a solver-only failure.
 python3 -B validate_initial_prom.py run
