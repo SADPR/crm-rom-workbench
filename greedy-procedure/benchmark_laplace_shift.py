@@ -127,12 +127,6 @@ def prepare_aerof_check(baseline):
             'LaplaceSnapshotData = "{}/Laplace-bin/ushift.bin";'.format(run_dir),
         'Prefix = "{}/results/";'.format(baseline):
             'Prefix = "{}/results/";'.format(check_dir),
-        'LiftandDrag = "../postpro/liftdrag.out";':
-            'LiftandDrag = "{}/postpro/liftdrag.out";'.format(check_dir),
-        'Force = "../postpro/force.out";':
-            'Force = "{}/postpro/force.out";'.format(check_dir),
-        'Residual = "../postpro/Residual.out";':
-            'Residual = "{}/postpro/Residual.out";'.format(check_dir),
         'Prefix = "{}/references/";'.format(baseline):
             'Prefix = "{}/references/";'.format(check_dir),
         'Prefix = "{}/snapshots/";'.format(baseline):
