@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 PARAM_NAMES = ['M', 'Alpha', 'Shape', 'Camber', 'Thickness']
 
 
-def sobolGenerator(ranges, numHDM, include_corners=True, numToSkip=0, names=None):
+def sobolGenerator(ranges, numHDM, include_corners=True, numToSkip=0, names=None, make_plot=True):
     """
     Generate HDM points using a Sobol quasi-random sequence.
 
@@ -61,7 +61,8 @@ def sobolGenerator(ranges, numHDM, include_corners=True, numToSkip=0, names=None
         HDM_points = sobol_points
         corners = None
 
-    plotPoints(HDM_points, corners, lo, hi, act, names, numHDM)
+    if make_plot:
+        plotPoints(HDM_points, corners, lo, hi, act, names, numHDM)
 
     return HDM_points[numToSkip:]
 
