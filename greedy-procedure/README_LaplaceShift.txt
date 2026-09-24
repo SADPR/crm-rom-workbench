@@ -28,7 +28,7 @@ the deformed .top file, solves the FEniCS problem on 24 ranks, converts the
 result to a six-component SA shift, and partitions it as ushift.bin001 ...
 ushift.bin120.  It refuses to overwrite an existing benchmark.
 
-After the benchmark succeeds, prepare a one-iteration AERO-F read check:
+After the benchmark succeeds, prepare an AERO-F initialization read check:
 
   python3 -B benchmark_laplace_shift.py prepare-aerof-check
   sbatch submit_baseline_laplace_check.sbatch
