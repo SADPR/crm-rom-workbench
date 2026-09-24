@@ -6,6 +6,7 @@ import json
 import math
 import os
 from pathlib import Path
+import subprocess
 import tempfile
 
 from setup import Settings
@@ -112,7 +113,7 @@ def snapshot_catalog(settings, entries):
     lines = ['{}\n'.format(len(entries))]
     for entry in entries:
         lines.append(
-            '{}snapshots/State.bin {} {} 1 1 \n'.format(
+            '{}/snapshots/State.bin {} {} 1 1 \n'.format(
                 entry['target'].as_posix(), settings.SnapIndex, settings.SnapIndex
             )
         )
@@ -124,7 +125,7 @@ def parameter_catalog(settings, entries):
     lines = ['{}\n'.format(len(entries)), '{}\n'.format(len(entries[0]['point']))]
     for entry in entries:
         lines.append(
-            '{}snapshots/State.bin {}\n'.format(
+            '{}/snapshots/State.bin {}\n'.format(
                 entry['target'].as_posix(), settings.SnapIndex
             )
         )
@@ -247,7 +248,16 @@ def build_pod(settings):
     )
     hpc.mpi = os.environ.get('MPI', 'mpirun')
     print('Building initial POD with {} ranks: {}.'.format(settings.HDMnproc, hpc.mpi))
-    pod.execute(hpc=hpc)
+    pod.create_input_file()
+    pod.writeInputFile()
+    command = hpc.execute_str(pod.bin, pod.infile.fname)
+    print(command, flush=True)
+    with open(pod.infile.log, 'w') as log_file:
+        result = subprocess.run(
+            command, shell=True, stdout=log_file, stderr=subprocess.STDOUT, check=False
+        )
+    if result.returncode != 0:
+        raise RuntimeError('Initial POD failed; inspect {}.'.format(pod.infile.log))
     print('Initial POD completed: {}.'.format(pod_dir))
 
 
