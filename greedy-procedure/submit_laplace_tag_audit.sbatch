@@ -9,7 +9,7 @@
 
 set -euo pipefail
 
-cd "$(dirname "${BASH_SOURCE[0]}")"
+cd "${SLURM_SUBMIT_DIR:?submit this script from greedy-procedure}"
 source /scratch/users/sadpr/Code3Aug/miniconda3/etc/profile.d/conda.sh
 conda activate CRM_Laplace
 trap 'conda deactivate >/dev/null 2>&1 || true' EXIT
