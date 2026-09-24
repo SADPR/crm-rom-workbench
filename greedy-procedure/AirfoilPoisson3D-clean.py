@@ -84,6 +84,32 @@ def parseMeshGeometry(top_file):
 
     return nodes, tets, triangles, triangles_names, physical_tags
 
+
+def parsePhysicalTags(top_file):
+    """Return the element-block names in the order used for FEniCS tags."""
+    physical_tags = []
+    with open(top_file, 'r') as top:
+        for line in top:
+            parts = line.split()
+            if len(parts) >= 2 and parts[0] == 'Elements':
+                physical_tags.append(parts[1])
+    return physical_tags
+
+
+def laplaceBoundaryConditions(physical_tags):
+    """Set the CRM Laplace field to one at the fixed boundary and zero at the airfoil."""
+    boundary_values = (('InletFixed_2', 1), ('StickMoving_3', 0))
+    tags_by_name = {name: index for index, name in enumerate(physical_tags, start=1)}
+    missing = [name for name, _ in boundary_values if name not in tags_by_name]
+    if missing:
+        raise RuntimeError('Missing CRM boundary groups: {}'.format(', '.join(missing)))
+
+    # Symmetry_1 touches every vertex in the one-layer CRM extrusion. Leaving
+    # it natural avoids the previous constant u_star field caused by u_star=1 there.
+    facet_tags = [tags_by_name[name] for name, _ in boundary_values]
+    uBC = [value for _, value in boundary_values]
+    return facet_tags, uBC
+
 # %% [markdown]
 # # Split into 2 XDMF files, one for tetrahedron, one for triangles
 
@@ -322,6 +348,7 @@ if __name__ == "__main__":
 
     top_filename = args.top_filename
     top_file = os.path.join(top_filename)
+    physical_tags = parsePhysicalTags(top_file)
     
     # Extract just the filename (without path) for use in output file naming
     top_filename_only = os.path.basename(top_filename)
@@ -339,14 +366,15 @@ if __name__ == "__main__":
     if os.path.exists(f"{xdmf_folder}/{top_filename_only[:dot_idx]}-mesh.xdmf") and os.path.exists(f"{xdmf_folder}/{top_filename_only[:dot_idx]}-facets.xdmf"):
         if rank == 0: print("XDMF files already exist. Skipping mesh generation.", flush=True)
     else:
-        nodes, tets, triangles, triangles_names, physical_tags = parseMeshGeometry(top_file)
-        generateXDMF(nodes, tets, triangles, triangles_names, physical_tags, top_filename_only, xdmf_folder = xdmf_folder, comm=comm, rank=rank)
+        nodes, tets, triangles, triangles_names, mesh_tags = parseMeshGeometry(top_file)
+        if mesh_tags != physical_tags:
+            raise RuntimeError('Inconsistent element-block ordering in {}'.format(top_file))
+        generateXDMF(nodes, tets, triangles, triangles_names, mesh_tags, top_filename_only, xdmf_folder = xdmf_folder, comm=comm, rank=rank)
     
     mesh, facets = loadMeshFEniCS(top_filename_only, xdmf_folder=xdmf_folder, comm=comm, rank=rank)
     comm.Barrier()
 
-    facet_tags = [8,7,6,4,3,2] 
-    uBC = [0,0,0,0,0,1] # 0 for plane surface, 1 for outlet
+    facet_tags, uBC = laplaceBoundaryConditions(physical_tags)
     V, bcs = defineBC(mesh, facets, facet_tags, uBC)
     u_star = solveProblem(mesh=mesh, p=1, V=V, bcs=bcs, f=0.0)
 
