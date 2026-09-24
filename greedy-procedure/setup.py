@@ -56,8 +56,8 @@ class Settings:
         # How many singular vectors to keep
         self.StateBasisMaxDim = 1000
         
-        # POD algorithm. ScalapackSVD recommended
-        self.PODMethod = 'ScalapackSVD'
+        # Use RSVD instead of ScalapackSVD because Sherlock AERO-F lacks ScaLAPACK.
+        self.PODMethod = 'RSVD'
 
         # Whether or not to use RBF
         self.rbf = False
