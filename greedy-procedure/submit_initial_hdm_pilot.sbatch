@@ -51,7 +51,8 @@ export MKL_NUM_THREADS=1
     printf 'nodes=%s\n' "${SLURM_JOB_NUM_NODES}"
     printf 'tasks=%s\n' "${SLURM_NTASKS}"
     printf 'aerof=%s\n' "${AEROF}"
-    git -C "${repo_dir}" rev-parse HEAD
+    # Sherlock's Git does not support -C; enter the repository explicitly.
+    (cd "${repo_dir}" && git rev-parse HEAD)
     module -t list 2>&1
     python3 --version
 } > "${run_dir}/job_${SLURM_JOB_ID}.env"
