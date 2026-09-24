@@ -131,6 +131,10 @@ def quoted(path):
     return '"{}"'.format(path.as_posix())
 
 
+def quoted_prefix(path):
+    """Format an AERO-F directory prefix, including its required separator."""
+    return '"{}/"'.format(path.as_posix())
+
 def source_files():
     """Validate the completed PROM run that supplies geometry and Laplace data."""
     required = [
@@ -156,7 +160,7 @@ def render_input(template, variant, directory):
     reference_dir = directory / 'references'
 
     text = template
-    text = update_assignment(text, 'Postpro', 'Prefix', quoted(result_dir))
+    text = update_assignment(text, 'Postpro', 'Prefix', quoted_prefix(result_dir))
     text = update_assignment(text, 'Postpro', 'PressureCoefficient', '""')
     text = update_assignment(text, 'Postpro', 'SkinFrictionCoefficient', '""')
     text = update_assignment(text, 'Postpro', 'Mach', '""')
@@ -164,8 +168,8 @@ def render_input(template, variant, directory):
     text = update_assignment(text, 'Postpro', 'Velocity', '""')
     text = update_assignment(text, 'Postpro', 'FluxResidual', '""')
     text = update_assignment(text, 'Postpro', 'ControlVolume', '""')
-    text = update_assignment(text, 'Restart', 'Prefix', quoted(reference_dir))
-    text = update_assignment(text, 'NonlinearROM', 'Prefix', quoted(postpro_dir))
+    text = update_assignment(text, 'Restart', 'Prefix', quoted_prefix(reference_dir))
+    text = update_assignment(text, 'NonlinearROM', 'Prefix', quoted_prefix(postpro_dir))
     text = update_assignment(text, 'NonlinearROM', 'ReducedResidual', '"ReducedResidual.out"')
     text = update_assignment(
         text,
@@ -358,6 +362,7 @@ def run(selected):
     if not aerof or not Path(aerof).is_file():
         raise RuntimeError('AEROF must name the built AERO-F executable.')
     variants = VARIANTS if selected == 'all' else (variant_by_name(selected),)
+    summaries = {}
     for variant in variants:
         directory = case_dir(variant)
         input_file = directory / 'input'
@@ -375,8 +380,10 @@ def run(selected):
         if result.returncode != 0:
             raise RuntimeError('{} failed; inspect {}/log.'.format(variant.name, directory))
         summaries[variant.name] = summarize_case(variant)
-        summarize_case(variant)
 
+
+    if selected == 'all':
+        write_report(summaries)
 
 def report():
     """Regenerate the combined report from completed diagnostic case summaries."""
