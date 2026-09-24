@@ -106,7 +106,7 @@ def run(baseline):
 
 
 def prepare_aerof_check(baseline):
-    """Write a one-iteration AERO-F input that reads the nominal Laplace shift."""
+    """Write an AERO-F initialization check that reads the nominal Laplace shift."""
     run_dir = workspace(baseline)
     shift = run_dir / 'Laplace-bin/ushift.bin001'
     if not shift.is_file():
