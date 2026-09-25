@@ -20,6 +20,10 @@ greedy-procedure/BaselineRuns/
 greedy-procedure/hromruns*/
 greedy-procedure/evaluate/
 greedy-procedure/xdmf_files/
+# Additional campaign workspaces and transient Laplace data generated on Sherlock.
+greedy-procedure/tempEI_Laplace/
+greedy-procedure/combined_Sobol/
+greedy-procedure/combined_HDMs/
 
 # The supplied CRM mesh is 535 MB and has individual files above GitHub's
 # regular 100 MB limit. Install it locally as ./mesh; it is not versioned.
