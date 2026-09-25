@@ -77,3 +77,19 @@ an HDM whose second stage misses `HDMtol2`.
    scalar full-residual history written to `Residual.out`.
 
 No job in this sequence overwrites the exploratory campaign or its backup.
+
+## Independent holdout
+
+`submit_clean_laplace_holdout.sh` submits a three-job dependency chain for
+Sobol continuation point 33, which is not in the 32-state POD:
+
+```text
+[0.53125, 1.5625, 0.309375, 0.03, 0.12]
+```
+
+Its HDM is written only to `CleanLaplaceHoldout/HDMrun001`. The frozen POD,
+the two 32-sample catalogs, and the holdout geometry/Laplace field are checked
+before the PROM runs. The PROM is written separately at
+`CleanLaplaceRuns/evaluate/romruns032/point901`; it is an online result only
+and is never added to the POD. The final dependent job writes field comparison
+Exodus files to `CleanLaplaceHoldout/field_comparison/`.
