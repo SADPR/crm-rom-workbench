@@ -69,5 +69,11 @@ an HDM whose second stage misses `HDMtol2`.
    HDM. The PROM state is output with `OutputShiftVectorType = None` solely
    for this comparison; the online formulation still uses
    `ShiftVectorType = Laplace`.
+7. Submit `submit_clean_laplace_prom_comparison.sbatch` after the validation
+   has completed. It exports six ParaView-ready Exodus files at
+   `CleanLaplaceRuns/evaluate/romruns032/point001/postpro/field_comparison/`:
+   HDM, PROM, and PROM-minus-HDM fields for the flow and for the nodal flux
+   residual. `FluxResidual` is a spatial AERO-F diagnostic; it is not the
+   scalar full-residual history written to `Residual.out`.
 
 No job in this sequence overwrites the exploratory campaign or its backup.
