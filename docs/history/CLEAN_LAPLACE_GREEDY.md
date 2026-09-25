@@ -1,5 +1,9 @@
 # Clean Laplace Greedy Enrichment
 
+> **Historical record (superseded 2026-09-25).** The active plan is the 5D
+> transonic Sobol campaign in `CRM_WORKFLOW_HANDOFF.md`. Scripts named here
+> were removed from HEAD and remain in git history.
+
 ## Purpose
 
 `CleanLaplaceRuns` and its Sobol point-33 holdout are the immutable, audited

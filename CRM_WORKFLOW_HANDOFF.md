@@ -11,32 +11,34 @@ terminal history.
 
 ## 1. Current status at a glance
 
-The current objective is a **steady, global, nonlinear PROM** for a parametric
-CRM/NACA airfoil problem. It is not yet an HPROM and it is not yet unsteady.
+The objective is a **steady, global, nonlinear PROM** for a parametric NACA
+airfoil problem, later an HPROM, local/nonlinear manifolds, and unsteady URANS.
 
-The stable, audited starting point is:
+On 2026-09-25 the target changed. Yihong Zhu, who built the original case,
+confirmed that her final study, and the regime Farhat asked for, is a
+**5D transonic box** (Section 7). The 3D subsonic box we had been running came
+from the delivered `setup.py` and was never her final configuration.
 
-- 32 clean, converged steady HDMs;
-- a 32-state distributed `ScalapackSVD` POD;
-- a full PROM using `ShiftVectorType = Laplace` and `Form = NonDescriptor`;
-- one independent, out-of-training Sobol holdout at point 33;
-- a field/force comparison for both a training point and the independent
-  holdout.
+What exists now:
 
-The independent holdout is promising, but it is not a universal certification
-of the PROM. The next construction step is residual-greedy enrichment from 32
-to 40 HDMs in a **new, isolated campaign root**. After the 40-state POD is
-validated on several independent points, then and only then should we begin
-HPROM work. Unsteady work comes after a trusted steady baseline.
+- A validated pipeline: named-boundary Laplace shift, two-stage HDM,
+  ScaLAPACK POD, Laplace/`NonDescriptor` LSPG PROM, and field comparison. It
+  was exercised on 32 clean 3D subsonic HDMs plus one independent holdout
+  (drag error 0.39%). That campaign is archived as pipeline validation
+  (Section 10).
+- A clean Sherlock tree: `greedy-procedure/` holds only source; all earlier
+  generated data are in the backups area.
 
-At the time this file was added, the source-tree checkpoint is:
+What comes next (approved plan, executed one phase at a time):
 
-```text
-830e79e Add isolated clean Laplace greedy enrichment
-```
+1. Confirm details with Yihong and compare her `xdmf-files` Laplace setup.
+2. Write the 5D Sobol campaign driver and the test-set driver.
+3. Pilot of 4 HDMs: the easiest, the two hardest, and the central point.
+4. Training batches of 128 → 256 → 512 HDMs plus 32 independent test HDMs,
+   with a go/no-go decision after each batch.
 
-The eight extra HDMs have not been launched merely by committing this code.
-Submitting jobs on Sherlock remains an explicit human action.
+The residual greedy was dropped (Section 13). Submitting jobs on Sherlock
+remains an explicit human action.
 
 ## 2. Non-negotiable operating rules
 
@@ -75,7 +77,11 @@ an otherwise reproducible campaign into an undocumented experiment.
    In particular, do not run `clean.sh`, `git clean -fdx`, `rm -r GreedyRuns*`,
    or an unscoped recursive removal from this workbench. Some older scripts
    contain broad cleanups appropriate only for a disposable experiment. Every
-   generated directory is evidence until intentionally archived.
+   generated directory is evidence until intentionally archived. On Sherlock,
+   `git clean -fd` and `git stash -u` are just as dangerous for any result
+   directory missing from `.gitignore`. Deleting is acceptable only as an
+   explicit, listed step of an agreed plan, with a check before each removal
+   (see the 2026-09-25 cleanup in Section 10).
 
 7. **Never overwrite a campaign root.**
    The safe drivers refuse to overwrite a pre-existing result. If a fresh
@@ -92,9 +98,10 @@ an otherwise reproducible campaign into an undocumented experiment.
    separate campaign.
 
 10. **Do not infer that a PROM is bad from `Residual.out` alone.**
-    It records a full-order residual diagnostic. The LSPG PROM minimizes its
-    projected residual, not necessarily that full residual. Physical field and
-    force comparisons against independent HDMs remain necessary.
+    It records the full-order residual relative to the PROM's own initial
+    (IDW) residual. LSPG minimizes the full residual norm over its subspace,
+    but that minimum is not zero (Section 11). Physical field and force
+    comparisons against independent HDMs remain necessary.
 
 ## 3. Canonical locations
 
@@ -124,8 +131,12 @@ an otherwise reproducible campaign into an undocumented experiment.
     greedy-procedure/mesh -> ../mesh is a tracked relative link.
 
 /scratch/users/sadpr/Code3Aug/crm-rom-workbench-backups/
-    Explicit archival area.
-    2026-09-24_pre-clean-laplace preserves the old exploratory outputs.
+    Explicit archival area (not visible through the SSHFS mount).
+    2026-09-24_pre-clean-laplace: the exploratory outputs (their only copy).
+    2026-09-25_clean-laplace-3d-subsonic: the clean 3D campaign and the
+    metadata of the cancelled greedy.
+    Both live on scratch, which Sherlock purges after 90 days without
+    modification; copy anything that must last to Oak.
 
 /scratch/users/sadpr/Code3Aug/aero-f
     Sherlock AERO-F source clone.
@@ -145,6 +156,16 @@ an otherwise reproducible campaign into an undocumented experiment.
 
 Treat the original delivery as read-only provenance. Do not write experiments
 there and do not replace it with workbench results.
+
+### Yihong Zhu's reference data (read-only)
+
+```text
+/home/users/zyh03/xdmf-files
+    Laplace inputs her runs used; she asked us to copy it into the project.
+/oak/stanford/groups/cfarhat/zyh03/
+/scratch/users/zyh03/FinalSnappingPaper
+    Her final 5D runs and error reports, where readable.
+```
 
 ## 4. Repository and Git model
 
@@ -260,9 +281,12 @@ for example:
 
 ```bash
 mkdir -p /tmp/crm-view
-cp /home/sares/Sherlock_CRM/greedy-procedure/CleanLaplaceHoldout/field_comparison/prom_flow_fields.exo \
+cp /home/sares/Sherlock_CRM/greedy-procedure/<campaign-root>/<run>/field_comparison/prom_flow_fields.exo \
    /tmp/crm-view/
 ```
+
+The backups area is outside the mounted directory, so archived campaigns are
+only reachable from a Sherlock shell.
 
 That copy is a disposable visualization cache. It is not an input to the
 workflow and is not synchronized elsewhere.
@@ -368,35 +392,41 @@ not Euler:
 - angle of attack is passed as AERO-F `Beta`, with `Alpha = 0`, because of the
   mesh orientation.
 
-The current full five-component parameter vector is:
+The five-component parameter vector is:
 
 ```text
 [Mach, angle of attack, maximum camber location, maximum camber, thickness]
 ```
 
-The active three-dimensional box is currently:
+The target box is Yihong's final study, in which all five parameters vary:
 
 ```text
-Mach                  [0.4, 0.6]
-angle of attack       [-5, 5] degrees
-maximum camber loc.   [0.3, 0.6] chord fractions
+Mach                  [0.6, 0.8]      transonic: shocks expected
+angle of attack       [-2, 2] degrees
+maximum camber loc.   [0.2, 0.4] chord fractions
+maximum camber        [0, 0.03]
+thickness             [0.09, 0.12]
 ```
 
-The remaining shape parameters are intentionally fixed for this first model:
+Yihong also recommends `Beta = 0.5` instead of the delivered 1/3 so that
+transonic HDMs converge cleanly. `settings.Beta` is the reconstruction
+parameter of both the flow and turbulence `Space` blocks, not the inlet
+`Beta` angle, so it defines the HDM and PROM operators alike. Set it once in
+the campaign settings.
 
-```text
-maximum camber = 0.03
-thickness     = 0.12
-```
+With `include_corners=True`, `sobolGenerator` places all 2^5 = 32 corners
+first, followed by unscrambled Sobol points, so growing N keeps every earlier
+point. With maximum camber 0 the camber location has no geometric effect
+(`deform_naca.py`), so 8 corners duplicate geometry; we accept them to keep
+Yihong's generator unchanged. AERO-F normalizes each parameter to [0, 1]
+before computing IDW distances, so the different parameter scales are safe.
 
-They still appear in every parameter vector because the deformation routine
-expects all five entries. They do not currently add parametric variation.
+The earlier 3D validation box was Mach [0.4, 0.6], angle [-5, 5] degrees,
+camber location [0.3, 0.6], with camber 0.03 and thickness 0.12 fixed.
 
-The initial HDM catalog has eight corners of the active three-dimensional box
-and Sobol continuation points to reach 32 total samples. The Sobol generator
-prints a warning when its requested sample count is not a power of two. That
-warning describes Sobol balance quality; it does not invalidate the points or
-mean the runs failed.
+The Sobol generator prints a warning when its requested sample count is not a
+power of two. That warning describes Sobol balance quality; it does not
+invalidate the points or mean the runs failed.
 
 ## 8. Why each HDM has two stages
 
@@ -467,129 +497,74 @@ one, as expected.
 Do not change the named tags, replace them with a broad geometric selection, or
 reuse an old `ushift.bin` from the exploratory campaign.
 
-## 10. Historical generated-data campaigns
+An independent check on the holdout geometry confirmed the node mapping: in
+AERO-F node order, u* is exactly 1 on all 2698 `InletFixed_2` nodes and exactly
+0 on all 2698 `StickMoving_3` nodes. One solve takes about 45–55 s on 24 ranks.
 
-The directory name tells us which results may be used for what.
+Yihong's runs used a folder `/home/users/zyh03/xdmf-files`. Before the 5D
+campaign, compare its facet tags and Laplace field with this named-boundary
+setup on the same mesh, and keep ours unless they differ.
 
-### A. Exploratory / historical directories: do not use as current training data
+## 10. Campaign history and where the data are now
 
-```text
-greedy-procedure/GreedyRuns/
-greedy-procedure/InitialHDMruns/
-greedy-procedure/BaselineRuns/
-greedy-procedure/CRMDiagnostics/
-```
+The directory name tells us which results may be used for what. On 2026-09-25
+the Sherlock tree was cleaned as an explicit plan step: each generated
+directory below was archived, or deleted only after its file list matched a
+backup.
 
-These were useful for discovering the Laplace boundary error, installing the
-environment, building AERO-F, exercising the two HDM stages, and learning the
-postprocessing conventions. They are not the official clean ROM database.
+### A. Exploratory campaign (Sept 22–24): never training data
 
-Before regenerating clean data, these directories were preserved at:
+`GreedyRuns/`, `InitialHDMruns/`, `BaselineRuns/`, `CRMDiagnostics/`. They
+served to build the environment and AERO-F, exercise the two HDM stages, and
+discover the constant-Laplace error. Their only copy is now
+`crm-rom-workbench-backups/2026-09-24_pre-clean-laplace` (36 GB, with the
+source commit and mesh checksum); the in-tree duplicates were deleted.
 
-```text
-/scratch/users/sadpr/Code3Aug/crm-rom-workbench-backups/
-2026-09-24_pre-clean-laplace
-```
+### B. Clean 3D subsonic campaign (Sept 24–25): pipeline validation
 
-The backup is about 36 GB. It should not be deleted casually, copied into Git,
-or mixed into the clean state catalog.
+Archived by `mv` to
+`crm-rom-workbench-backups/2026-09-25_clean-laplace-3d-subsonic/`:
 
-### B. Clean 32-state campaign: official current v1 training database
+- `CleanLaplaceRuns/`: 32 audited HDMs (final residuals 4.9836e-07 to
+  4.9993e-07, nonconstant shifts), their catalogs, the 32-state
+  `ScalapackSVD` POD (`reductionrun032/`), and the PROM runs;
+- `CleanLaplacePrecompute/` and `CleanLaplaceBaseline/` (nominal inspection
+  case);
+- `CleanLaplaceHoldout/`: the independent holdout HDM and its comparison.
 
-```text
-greedy-procedure/CleanLaplaceRuns/
-greedy-procedure/CleanLaplacePrecompute/
-greedy-procedure/CleanLaplaceBaseline/
-```
+Catalog paths inside the archive are relative to that directory.
 
-Meaning:
+Training-point check (`HDMrun001`): drag 0.049% and lift 0.073% error. It
+tests plumbing, not generalization.
 
-- `CleanLaplacePrecompute/` held the separate precompute HDM directories
-  before audit/assembly.
-- `CleanLaplaceRuns/HDMrun001` through `HDMrun032` are the audited training
-  HDMs used by the v1 POD.
-- `CleanLaplaceRuns/statesnapdata.txt` and `parsoldata.txt` describe exactly
-  those 32 state snapshots and parameter points.
-- `CleanLaplaceRuns/reductionrun032/` is the full distributed ScaLAPACK POD.
-- `CleanLaplaceBaseline/` is a nominal independent physical-inspection case;
-  it is not a training state unless its catalog says so.
-
-The initial POD assembly deliberately moves only audited HDM runs into the
-training root. It checks each metadata point, required binary partition,
-nonconstant Laplace field, and final HDM residual before building the catalog.
-
-### C. Clean 32-state training-point PROM validation
-
-```text
-CleanLaplaceRuns/evaluate/romruns032/point001/
-CleanLaplaceRuns/evaluate/hromruns032/point001/
-```
-
-This checks that the online Laplace solve, AERO-F files, POD, and full PROM
-pipeline reproduce a point that is already represented in the training
-database. It is a useful wiring test, but it is not a generalization test.
-
-At that point, fields and forces agreed closely with the HDM. Typical force
-errors were approximately 0.049% drag and 0.073% lift. The full residual was
-about 0.969; that fact alone does not contradict the good physical comparison
-for the LSPG PROM.
-
-### D. Independent v1 holdout: the actual generalization check already done
-
-```text
-greedy-procedure/CleanLaplaceHoldout/
-```
-
-The held-out point is Sobol continuation point 33:
-
-```text
-[0.53125, 1.5625, 0.309375, 0.03, 0.12]
-```
-
-It is deliberately excluded from the 32-state POD. Before its PROM ran, the
-workflow fingerprinted the 32-state state catalog, parameter catalog, and
-singular values. It also required exact matching geometry positions and a
-Laplace relative L2 difference no larger than `1e-10` between HDM and PROM.
-
-The resulting v1 holdout reported:
+Independent holdout at Sobol point 33, `[0.53125, 1.5625, 0.309375, 0.03,
+0.12]`, excluded from the POD, with identical geometry and a Laplace
+difference of 7.9e-12:
 
 ```text
 HDM final residual       4.989276e-07
 PROM outer iterations    30
-PROM full residual       1.682292e-01
-drag relative error      3.868541e-03  (about 0.387%)
-lift relative error      4.232737e-04  (about 0.0423%)
-Mach relative L2 error   3.68349e-03   (about 0.368%)
-velocity relative L2     3.69914e-03   (about 0.370%)
-Cp relative L2           1.78521e-02   (about 1.785%)
-skin-friction relative   1.65951e-02   (about 1.660%)
+PROM full residual       1.682292e-01 (relative)
+drag relative error      0.387%
+lift relative error      0.0423%
+Mach / velocity L2       0.368% / 0.370%
+Cp / skin friction L2    1.785% / 1.660%
 ```
 
-These are encouraging results for a first global 32-state PROM. They do not
-prove every region of the parameter domain is equally accurate. The full
-residual stagnation and inner Newton warnings are diagnostics to retain, not a
-reason to silently redefine the method or declare success everywhere.
+The Cp and skin-friction numbers are L2 over all mesh nodes. They are not
+Yihong's surface-curve metric (Section 14), so they cannot be compared with
+her ~10% Cp error.
 
-### E. Clean residual-greedy enrichment: official current v2 construction
+The drivers for this campaign were removed from HEAD on 2026-09-25 and remain
+in git history. `clean_laplace_initial.py` stays until the 5D driver absorbs
+its helpers.
 
-```text
-greedy-procedure/CleanLaplaceGreedy40/
-```
+### C. Cancelled greedy 32→40 (Sept 25)
 
-This directory is created only when the v2 initialization command is run. It
-is intentionally separate from `CleanLaplaceRuns`.
-
-It contains:
-
-- a copied static mesh/decomposition directory;
-- a copy of `reductionrun032` used as the initial POD;
-- new state/parameter catalogs whose first 32 entries still reference the
-  original clean training snapshots;
-- screen records, candidate scores, frozen point selections, added HDMs 33--40,
-  and `reductionrun033` through `reductionrun040`.
-
-It does not use symbolic links. It does not duplicate the 32 large HDM
-directories. It never writes to `CleanLaplaceRuns` or `CleanLaplaceHoldout`.
+Iteration 33 was cancelled during its screen. Its small metadata (catalogs,
+candidates, screen and PROM logs) are in the 3D archive under
+`CleanLaplaceGreedy40-metadata/`; the root itself was deleted. Commit 0a72f33
+(absolute-residual selection) is the last version of that code.
 
 ## 11. PROM residuals, flux residuals, and what to compare
 
@@ -598,13 +573,25 @@ be conflated.
 
 ### `postpro/Residual.out`
 
-This is the history of the full-order residual norm evaluated at the PROM
-state. For a converged HDM, it should meet the HDM tolerance. For an LSPG PROM,
-it does not have to vanish, because the online method minimizes a projected
-least-squares residual in its reduced space.
+This is the full-order residual norm at each iteration divided by its value at
+iteration 0, which the log prints as `Spatial residual norm`.
 
-Use it to monitor convergence behavior and to rank candidates during the
-residual-greedy screen. Do not use it by itself as a physical-error metric.
+- **HDM:** iteration 0 is the freestream start, so the ratio is the
+  convergence measure behind `HDMtol2`.
+- **PROM:** iteration 0 is the IDW initial guess. LSPG minimizes the full
+  residual norm over its subspace, but that minimum is not zero. At a training
+  point the IDW guess is already the training state, so the ratio stays near 1
+  (0.969 at training point 001).
+- **Across parameter points:** only the absolute value (ratio × initial norm)
+  is comparable. Even at a training point it has a floor of about 2×10^4,
+  whereas converged HDMs sit at 35–61 absolute. The floor is unexplained; one
+  candidate is `PreComputeLimiter = On` in HDM stage 2 versus `Off` in the
+  PROM.
+- **Stagnation:** in the v1 PROMs the ratio barely moved after the first outer
+  iteration, while the CFL fell from 5 to between 1e-2 and 2e-4. The 30
+  iterations are the `MaxIts` cap, not convergence.
+
+Do not use it by itself as a physical-error metric.
 
 ### `FluxRes.bin` / `FluxResidual`
 
@@ -630,17 +617,13 @@ mixed together.
 ## 12. Postprocessing and ParaView
 
 The comparison scripts create ParaView-ready Exodus files for HDM, PROM, their
-difference, and their nodal flux-residual fields. For the initial clean
-training validation, these are under:
+difference, and their nodal flux-residual fields. For the 3D validation they
+are in the archive, under:
 
 ```text
-CleanLaplaceRuns/evaluate/romruns032/point001/postpro/field_comparison/
-```
-
-For the independent holdout, they are under:
-
-```text
-CleanLaplaceHoldout/field_comparison/
+crm-rom-workbench-backups/2026-09-25_clean-laplace-3d-subsonic/
+    CleanLaplaceRuns/evaluate/romruns032/point001/postpro/field_comparison/
+    CleanLaplaceHoldout/field_comparison/
 ```
 
 Typical files are:
@@ -676,189 +659,55 @@ computational far-field/one-layer extrusion and visualization scale. It is not
 by itself evidence of a physical anomaly.
 
 For the validated subsonic examples, maximum Mach remained below one, so the
-absence of a shock is expected.
+absence of a shock is expected. In the 5D transonic box, check for a region
+with Mach above one and a jump in the surface Cp.
 
-## 13. How to run the 32 -> 40 residual-greedy enrichment
+## 13. Why the residual greedy was dropped
 
-The new code is:
-
-```text
-greedy-procedure/clean_laplace_greedy.py
-greedy-procedure/submit_clean_laplace_greedy_screen.sbatch
-greedy-procedure/submit_clean_laplace_greedy_select.sbatch
-greedy-procedure/submit_clean_laplace_greedy_hdm.sbatch
-greedy-procedure/submit_clean_laplace_greedy_pod.sbatch
-greedy-procedure/submit_clean_laplace_greedy_iteration.sh
-```
-
-Read `CLEAN_LAPLACE_GREEDY.md` before the first submission. The short version
-is below.
-
-### Step 0: update Sherlock to the committed source revision
-
-```bash
-set -euo pipefail
-
-cd /scratch/users/sadpr/Code3Aug/crm-rom-workbench
-git fetch origin
-git reset --hard origin/main
-
-cd greedy-procedure
-module purge
-module load cmake/3.24.2 gcc/10.1.0 openmpi/4.1.2 imkl/2019
-
-source /scratch/users/sadpr/Code3Aug/miniconda3/etc/profile.d/conda.sh
-conda activate GreedyAEROF
-
-export SOWER=/home/groups/cfarhat/bin/sower
-export PARTMESH=/home/groups/cfarhat/bin/partnmesh
-export CD2TET=/home/groups/cfarhat/bin/cd2tet
-export CRM_CONDA_BASE=/scratch/users/sadpr/Code3Aug/miniconda3
-export CRM_LAPLACE_ENV=CRM_Laplace
-export AEROF=/scratch/users/sadpr/Code3Aug/aero-f/build-scalapack/bin/aerof.opt
-export MPI=srun
-export OMP_NUM_THREADS=1
-export MKL_NUM_THREADS=1
-```
-
-### Step 1: initialize the isolated v2 root once
-
-```bash
-python3 -B clean_laplace_greedy.py init
-python3 -B clean_laplace_greedy.py status
-```
-
-Expected status before the first selection:
+The clean greedy screened 24 candidate points with full PROMs before each
+added HDM. With the measured v1 costs:
 
 ```text
-Snapshots in current POD catalog: 32
-Target snapshots: 40
-Next iteration: 33
+one screen PROM     ~17 min on 5 nodes  ≈ 1.4 node-h
+24 screens                              ≈ 34 node-h
+selected HDM        ~35 min on 5 nodes  ≈ 2.9 node-h
+per added snapshot                      ≈ 37 node-h
 ```
 
-If `CleanLaplaceGreedy40` already exists, the initialization refuses to
-overwrite it. Do not delete it just to make the command pass. First inspect
-its `campaign.json`, `screening/`, current catalog counts, and `status`.
+A Sobol HDM costs about 2.9 node-h, so each greedy snapshot costs about 13
+Sobol snapshots, and the greedy is sequential. Yihong's greedy reached only
+200 samples for the same reason. Sobol campaigns run as Slurm arrays, and the
+design is nested, so batches can grow without recomputing earlier HDMs.
 
-### Step 2: submit one complete iteration
+The first greedy version also ranked candidates by the relative `Residual.out`
+value. That value is normalized by each candidate's own IDW initial residual,
+which inverts the ranking: training point 001 reports 0.969 against 0.168 at
+holdout 33, while their absolute residuals are 1.86e4 and 4.47e4. The
+delivered greedy (`runs.py` `getRes`) uses the absolute value. Any future
+greedy should rank by the absolute residual and use a cheap (HPROM)
+indicator.
 
-```bash
-bash submit_clean_laplace_greedy_iteration.sh 33
-```
+## 14. 5D validation plan
 
-The default candidate pool has 24 deterministic Sobol continuation points. It
-submits this dependency chain:
+- **Test set:** 32 points from an independent low-discrepancy sequence
+  (scrambled Sobol, fixed seed), disjoint from the training points. Each gets
+  its own HDM outside the training root and is never added to a catalog.
+- **Evaluation:** the full PROM of every training batch (128, 256, 512) at
+  every test point.
+- **Metrics:**
+  - Yihong's surface Cp error, `ROMerror.getCp` + `cpL2error`: L2 over the
+    z = 0 wall nodes, top and bottom sorted by x, in percent;
+  - the same L2 for skin friction;
+  - drag and lift relative error;
+  - field L2 from `postprocess_clean_prom_comparison.py`;
+  - a snapping flag as in `checkSnapping.py`.
+- **Report:** mean, median and maximum per batch, and the number of snapped or
+  failed points. They are never excluded silently.
+- **Reference:** Yihong's Laplace-affine 5D greedy (her Fig. 3) gave a mean
+  surface-Cp error of 21% at 32 samples and 9–10% at 50–200, with maxima of
+  43–55%.
 
-```text
-screen array -> selection -> selected HDM -> POD
-```
-
-The screen array is throttled to three concurrent jobs. Each screen PROM asks
-for five nodes / 120 ranks, so no more than 15 nodes are requested by that
-array at a time. The selected HDM and POD each request five nodes afterward.
-
-Why the stages are sequential:
-
-- the selected HDM must be chosen from actual PROM screen results;
-- the HDM must converge before it becomes a catalog entry;
-- POD 33 must use the new catalog before the next greedy iteration ranks points
-  with a 33-state basis.
-
-Do not submit 34 through 40 at once. Each must use the POD built by the prior
-iteration. After a successful iteration 33, repeat:
-
-```bash
-python3 -B clean_laplace_greedy.py status
-bash submit_clean_laplace_greedy_iteration.sh 34
-```
-
-Continue sequentially through 40.
-
-The candidate count can be reduced explicitly if cluster availability makes 24
-full PROM evaluations inappropriate, for example:
-
-```bash
-bash submit_clean_laplace_greedy_iteration.sh 33 16
-```
-
-This parameter changes the size of the ranking pool, not the number of HDMs
-added. One successful iteration always adds exactly one HDM and one POD.
-
-### Monitoring one iteration
-
-```bash
-squeue -u sadpr
-squeue -p cfarhat
-```
-
-The submitted job IDs printed by the wrapper identify the four stages. A
-pending dependent job is normal. For example, `Reason=Dependency` means it is
-waiting for the preceding stage, while `JobArrayTaskLimit` means three screen
-tasks are already active.
-
-After a stage completes, inspect the specific files rather than guessing from
-the queue alone:
-
-```bash
-python3 -B clean_laplace_greedy.py status
-find CleanLaplaceGreedy40/screening/iteration033 -maxdepth 1 -type f -printf '%f\n' | sort
-cat CleanLaplaceGreedy40/screening/iteration033/selection.json
-cat CleanLaplaceGreedy40/HDMrun033/greedy_sample.json
-```
-
-The selection file records all candidate scores and the chosen point. The HDM
-metadata records the Laplace range and final HDM residual. The POD completion
-is represented by `CleanLaplaceGreedy40/reductionrun033/` and its partitioned
-ROB/reference files.
-
-### What the enrichment driver guarantees
-
-- Source catalogs from `CleanLaplaceRuns` are SHA-256 fingerprinted.
-- The first 32 entries of the new catalogs must remain text-identical to the
-  v1 source catalogs.
-- Each selected point is recorded before its HDM starts.
-- The selected HDM gets a new deformed geometry and a new named-boundary
-  Laplace solve; it does not reuse a v1 shift.
-- The Laplace field must be nonconstant and finite.
-- Both HDM stages must finish and the final residual must meet `HDMtol2`.
-- Only then is a 33rd--40th entry appended to the new catalog.
-- The new POD is `ScalapackSVD` and refuses to overwrite an existing
-  `reductionrunNNN`.
-- It uses full PROM screens (`HyperReduced = False`); it cannot accidentally
-  become HPROM/ECSW training.
-
-## 14. Validation plan after the 40-state POD
-
-After `reductionrun040` exists, do not immediately start HPROM. First create
-and run **new 40-state holdout drivers**. The existing
-`clean_laplace_holdout.py` is deliberately frozen to POD 32 and point 33. Do
-not edit or repurpose it in place, because that would destroy the meaning of
-the completed v1 holdout.
-
-The correct next implementation is a sibling 40-state validation workflow
-that:
-
-1. chooses points outside the final 40-state catalog;
-2. creates HDM directories outside `CleanLaplaceGreedy40`;
-3. fingerprints the 40-state catalogs and POD inputs;
-4. runs independent HDM and full PROM with separately generated but identical
-   geometry/Laplace fields;
-5. outputs field and force comparisons;
-6. never appends holdout snapshots to the training catalog.
-
-Use at least two or three validation points:
-
-- an interior point;
-- a more challenging point near an active-domain boundary or a higher observed
-  PROM-residual region;
-- optionally a second region that is physically distinct in its angle of
-  attack or Mach response.
-
-The former point-33 result stays useful as a v1 record. It should not be called
-a clean 40-state holdout if a selected greedy HDM happens to use it; the v2
-candidate generator intentionally starts after point 33 to preserve it.
-
-## 15. HPROM comes after the 40-state PROM is trusted
+## 15. HPROM comes after the 5D global PROM is trusted
 
 The planned HPROM order is:
 
@@ -898,24 +747,26 @@ For unsteady ROM design, distinguish carefully between:
 - nonlinear/Newton iterations, which solve the implicit equations within one
   physical time step.
 
-## 17. Questions to resolve with the prior CRM user/colleague
+## 17. Yihong's answers (2026-09-25) and open questions
 
-Before committing major additional compute, confirm the intended reference
-configuration with the person who created the original CRM example:
+Her answers:
 
-1. Did the final study vary only Mach, angle of attack, and maximum camber
-   location, with maximum camber and thickness fixed? Or did it vary all five
-   parameters? If all five, what ranges were used for maximum camber and
-   thickness?
-2. Did the final PROM use the Laplace shift with the `NonDescriptor`
-   formulation? The Laplace component is the part intended to prevent
-   geometry-driven snapping.
-3. How many HDM simulations/snapshots were ultimately used to build the PROM?
-   We currently have 32 initial Sobol points and are preparing controlled
-   enrichment while avoiding using Sherlock more aggressively than necessary.
+1. She varied all five parameters, with the ranges of Section 7. Farhat
+   wanted the transonic regime, which she considers a bit aggressive.
+2. Use `Beta = 0.5` instead of 1/3 for clean HDM convergence.
+3. She used the Laplace shift (`ShiftVectorType = Laplace`, also during the
+   HDM runs) and asked us to copy `/home/users/zyh03/xdmf-files`.
+4. Her greedy reached about 200 samples with ~10% surface-Cp error. She
+   recommends Sobol with 500–1000 points, at about 20 min per HDM on 5 nodes.
 
-This information improves the sampling plan; it does not retroactively justify
-mixing old exploratory snapshots into the corrected clean campaign.
+Open questions for her:
+
+1. The path to her final 5D run, with `settings.readonly` and
+   `SampledPointsOutput.txt`.
+2. Whether her curves come from `ROMerror.py` (L2) or
+   `GreedyAlgorithm.saveResults` (L1), how many evaluation points she used,
+   and whether she excluded snapped points.
+3. What `xdmf-files` contains and how her code uses it.
 
 ## 18. Common failures and how to reason about them
 
@@ -993,12 +844,18 @@ hide meaningful wall/wake errors. Set meaningful shared ranges, inspect
 individual components when necessary, and report numerical norms alongside
 images.
 
+### Pasting `set -euo pipefail` into an interactive shell
+
+It stays active in that shell, and the next failing command closes the
+session, including an interactive `salloc` node. Wrap multi-line blocks in
+`bash <<'EOF' ... EOF`, or run `set +euo pipefail` afterwards.
+
 ## 19. Compact restart checklist
 
 When returning after a break, follow this order:
 
 ```text
-1. Read this document and CLEAN_LAPLACE_GREEDY.md.
+1. Read this document.
 2. Inspect local git status; preserve unrelated user modifications.
 3. Make source/doc changes only locally.
 4. Commit explicitly named files and push main.

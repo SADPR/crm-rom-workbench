@@ -1,5 +1,9 @@
 # Clean Laplace Campaign
 
+> **Historical record (superseded 2026-09-25).** The active plan is the 5D
+> transonic Sobol campaign in `CRM_WORKFLOW_HANDOFF.md`. Scripts named here
+> were removed from HEAD and remain in git history.
+
 ## Decision
 
 The initial steady CRM HDM/POD/PROM campaign is retained only as an

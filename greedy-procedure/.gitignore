@@ -71,3 +71,6 @@ xdmf_files
 /CleanLaplaceHoldout/
 /CleanLaplaceGreedy40/
 /CRMDiagnostics/
+/Sobol5DRuns/
+/Sobol5DPrecompute/
+/Sobol5DTest/

@@ -5,6 +5,11 @@ The legacy FEniCS solver is included as AirfoilPoisson3D-clean.py.  The CRM
 workflow uses ShiftType = 'Laplace' and LaplaceShiftEach = True, so each
 deformed airfoil requires its own unit Laplace field.
 
+The solver sets boundary values by group name: InletFixed_2 = 1,
+StickMoving_3 = 0, and Symmetry_1 natural.  Symmetry_1 touches every vertex of
+the one-layer extrusion, so a Dirichlet value there makes the field constant.
+One solve takes about 45-55 s on 24 ranks.
+
 On Sherlock, create a separate environment once.  This intentionally stays
 separate from GreedyAEROF, which runs the workflow and AERO-F:
 
@@ -13,30 +18,6 @@ separate from GreedyAEROF, which runs the workflow and AERO-F:
   conda create -y -n CRM_Laplace -c conda-forge \
       python=3.12 fenics=2019.1.0 meshio h5py mpi4py
 
-To measure the nominal shift without touching its converged HDM outputs:
-
-  cd /scratch/users/sadpr/Code3Aug/crm-rom-workbench/greedy-procedure
-  module load gcc/10.1.0
-  conda activate GreedyAEROF
-  export CRM_CONDA_BASE=/scratch/users/sadpr/Code3Aug/miniconda3
-  export CRM_LAPLACE_ENV=CRM_Laplace
-  python3 -B benchmark_laplace_shift.py prepare
-  python3 -B benchmark_laplace_shift.py run
-
-The benchmark writes only below BaselineRuns/HDMrun001/laplace/.  It creates
-the deformed .top file, solves the FEniCS problem on 24 ranks, converts the
-result to a six-component SA shift, and partitions it as ushift.bin001 ...
-ushift.bin120.  It refuses to overwrite an existing benchmark.
-
-After the benchmark succeeds, prepare an AERO-F initialization read check:
-
-  python3 -B benchmark_laplace_shift.py prepare-aerof-check
-  sbatch submit_baseline_laplace_check.sbatch
-
-The check starts from the converged nominal solution, writes only below
-laplace/aerof-check/, and must report that it loaded the Laplace unit solution.
-
-run_laplace_shift.sh is the common launcher used by the benchmark and the
-HDM workflow.  It receives DEFORMED_TOP OUTPUT_DIR MPI_RANKS and requires
+run_laplace_shift.sh is the launcher used by the HDM and PROM drivers.  It receives DEFORMED_TOP OUTPUT_DIR MPI_RANKS and requires
 CRM_CONDA_BASE.  Override CRM_LAPLACE_ENV or CRM_LAPLACE_SOLVER only when a
 different environment or solver file is deliberate.
