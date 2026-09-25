@@ -350,7 +350,11 @@ def run(settings):
         '-n', str(settings.HDMnproc), aerof, str(run_dir / 'input')
     ]
     print(' '.join(command), flush=True)
-    with open(run_dir / 'log', 'w') as log_file:
+    log_path = run_dir / 'log'
+    previous_log = run_dir / 'log.failed-before-resume'
+    if log_path.is_file() and not previous_log.exists():
+        log_path.rename(previous_log)
+    with open(log_path, 'w') as log_file:
         result = subprocess.run(command, stdout=log_file, stderr=subprocess.STDOUT, check=False)
     if result.returncode != 0:
         raise RuntimeError('PROM validation failed; inspect {}/log.'.format(run_dir))
