@@ -11,6 +11,7 @@ import numpy as np
 import pyaeroopt
 
 from initial_hdm_campaign import get_point, prepare as prepare_point, run as run_point
+from initial_pod import initial_points
 from setup import Settings
 
 
@@ -67,7 +68,9 @@ def initialize(settings):
 
     master_dir.mkdir()
     precompute_dir.mkdir()
-    points = [get_point(settings, index)[0] for index in range(1, RUN_COUNT + 1)]
+    points = initial_points(settings)
+    if len(points) != RUN_COUNT:
+        raise RuntimeError("Expected {} Sobol points, generated {}.".format(RUN_COUNT, len(points)))
     source_commit = subprocess.check_output(
         ['git', 'rev-parse', 'HEAD'], text=True
     ).strip()
@@ -207,6 +210,9 @@ def run(settings, run_index):
 
 def audit(settings):
     """Check every clean sample before it is assembled into the POD catalog."""
+    points = initial_points(settings)
+    if len(points) != RUN_COUNT:
+        raise RuntimeError("Expected {} Sobol points, generated {}.".format(RUN_COUNT, len(points)))
     for run_index in range(1, RUN_COUNT + 1):
         directory = run_dir(settings, run_index)
         metadata = directory / ('pilot.json' if run_index == 1 else 'parameters.json')
@@ -214,7 +220,7 @@ def audit(settings):
         if not metadata.is_file() or not shift_metadata.is_file():
             raise RuntimeError('Missing campaign metadata for {}.'.format(directory))
         recorded = json.loads(metadata.read_text())
-        expected, _ = get_point(settings, run_index)
+        expected = points[run_index - 1]
         if recorded.get('point') != expected:
             raise RuntimeError('Unexpected Sobol point in {}.'.format(metadata))
         shift = json.loads(shift_metadata.read_text())
