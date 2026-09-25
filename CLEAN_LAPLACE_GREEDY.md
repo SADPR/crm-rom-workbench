@@ -20,7 +20,9 @@ For iteration `k`, where `k` starts at 33:
 
 1. Create a deterministic Sobol continuation candidate pool.
 2. Run a full Laplace-shifted, `NonDescriptor` PROM at each candidate.
-3. Select the candidate with the largest final *full* residual.
+3. Select the candidate with the largest final *absolute* full residual: the
+   relative `Residual.out` value times the initial `Spatial residual norm` in
+   that PROM log, as the original greedy does in `runs.py` `getRes`.
 4. Run the corresponding two-stage HDM with the corrected named-boundary
    Laplace shift.
 5. Append that HDM only after it reaches `HDMtol2`.
@@ -29,6 +31,13 @@ For iteration `k`, where `k` starts at 33:
 The residual is used only as a greedy ranking indicator; it is not a certified
 physical-state error. The screen is full PROM only: it creates neither ECSW
 weights nor a reduced mesh, so it is not HPROM work.
+
+The relative value alone is not used because each candidate normalizes it by
+its own IDW initial residual. That can invert the ranking: training point 001
+reports 0.969 (absolute 1.86e4), while holdout point 33 reports 0.168
+(absolute 4.47e4). Iteration 033 was screened before this change, so its
+`candidates.json` still names the relative residual; its `selection.json`
+records the indicator actually used and all three quantities per candidate.
 
 ## Safety contract
 
