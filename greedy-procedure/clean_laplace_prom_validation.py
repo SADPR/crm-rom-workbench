@@ -340,6 +340,9 @@ def run(settings):
     if (run_dir / 'postpro/Residual.out').exists():
         raise RuntimeError('PROM result exists; refusing to overwrite {}.'.format(run_dir))
 
+    # Make resume safe after a parser-level failure in an earlier validation input.
+    add_physical_state_output(run_dir / 'input')
+
     aerof = os.environ.get('AEROF')
     if not aerof or not Path(aerof).is_file():
         raise RuntimeError('AEROF must name the built AERO-F executable.')
