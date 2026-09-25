@@ -123,6 +123,15 @@ def write_exodus(xp2exo, top_file, decomposition, output, fields):
         raise RuntimeError('xp2exo did not create {}.'.format(output))
 
 
+def field_prefix(source):
+    """Return the unambiguous prefix used in exported field names."""
+    return {
+        'hdm': 'HDM',
+        'prom': 'PROM',
+        'difference': 'PROM_minus_HDM',
+    }[source]
+
+
 def prepare_output(output_dir, force):
     """Create a fresh, explicitly named comparison directory."""
     if output_dir.exists():
@@ -187,17 +196,18 @@ def main():
     if flux_component_count == 0:
         raise RuntimeError('FluxResidual contains no components.')
     for source in ('hdm', 'prom', 'difference'):
+        prefix = field_prefix(source)
         flux = values[source]['FluxResidual']
         magnitude = np.linalg.norm(flux, axis=1, keepdims=True)
         values[source]['FluxResidualMagnitude'] = magnitude
         write_final_frame(
             output_dir / source / 'FluxResidualMagnitude.xpost',
-            '{}_FluxResidualMagnitude'.format(source.upper()), tag, magnitude,
+            '{}_FluxResidualMagnitude'.format(prefix), tag, magnitude,
         )
         for component in range(flux_component_count):
             component_values = flux[:, component:component + 1]
             component_name = '{}_FluxResidualComponent{:02d}'.format(
-                source.upper(), component
+                prefix, component
             )
             write_final_frame(
                 output_dir / source / '{}.xpost'.format(component_name),
@@ -206,9 +216,7 @@ def main():
 
     flow_fields = {}
     for source in ('hdm', 'prom', 'difference'):
-        prefix = 'HDM' if source == 'hdm' else (
-            'PROM' if source == 'prom' else 'PROM_minus_HDM'
-        )
+        prefix = field_prefix(source)
         flow_fields[source] = []
         for field, _ in FLOW_FIELDS:
             output = output_dir / source / '{}_{}.xpost'.format(prefix, field)
@@ -217,9 +225,7 @@ def main():
 
     flux_fields = {}
     for source in ('hdm', 'prom', 'difference'):
-        prefix = 'HDM' if source == 'hdm' else (
-            'PROM' if source == 'prom' else 'PROM_minus_HDM'
-        )
+        prefix = field_prefix(source)
         flux_fields[source] = [output_dir / source / 'FluxResidualMagnitude.xpost']
         flux_fields[source].extend(
             output_dir / source / '{}_FluxResidualComponent{:02d}.xpost'.format(
