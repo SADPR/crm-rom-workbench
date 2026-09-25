@@ -24,6 +24,7 @@ INITIAL_COUNT = 32
 FINAL_COUNT = 40
 HOLDOUT_SOBOL_INDEX = 33
 DEFAULT_CANDIDATE_COUNT = 24
+INDICATOR = 'final_absolute_full_residual'
 
 
 def configure_settings():
@@ -295,8 +296,9 @@ def screen_initialize(settings, iteration, candidate_count):
         'iteration': iteration,
         'pod_index': iteration - 1,
         'candidate_count': candidate_count,
-        'indicator': 'final_relative_full_residual',
-        'indicator_note': 'This ranks full PROM residuals only; it is not a certified physical-state error.',
+        'indicator': INDICATOR,
+        'indicator_note': ('Relative Residual.out value times the initial residual norm, as in runs.py '
+                           'getRes; it is not a certified physical-state error.'),
         'candidates': candidates,
     })
     print('Prepared {} candidates for iteration {:03d}.'.format(candidate_count, iteration))
@@ -329,6 +331,22 @@ def read_final_relative_residual(path):
     if not math.isfinite(value):
         raise RuntimeError('{} has a non-finite final residual.'.format(path))
     return value
+
+
+def read_initial_residual_norm(path):
+    """Read the initial full residual norm that normalizes AERO-F's Residual.out."""
+    require_file(path)
+    with open(path) as log_file:
+        for line in log_file:
+            if 'Spatial residual norm = ' in line:
+                try:
+                    value = float(line.split('Spatial residual norm = ')[1])
+                except ValueError as error:
+                    raise RuntimeError('Cannot read the initial residual norm from {}.'.format(path)) from error
+                if not math.isfinite(value) or value <= 0.0:
+                    raise RuntimeError('{} has an invalid initial residual norm.'.format(path))
+                return value
+    raise RuntimeError('{} has no initial residual norm.'.format(path))
 
 
 def run_aerof(input_path, log_path, settings):
@@ -405,7 +423,7 @@ def screen(settings, iteration, candidate_number):
 
 
 def select(settings, iteration):
-    """Choose the largest finite full-PROM residual from a completed screen."""
+    """Choose the largest finite absolute full-PROM residual from a completed screen."""
     candidates = read_candidates(iteration)
     if current_count() != candidates['pod_index']:
         raise RuntimeError('The POD catalog changed before selecting iteration {:03d}.'.format(iteration))
@@ -418,29 +436,35 @@ def select(settings, iteration):
         record_path = iteration_dir(iteration) / 'candidate{:03d}.json'.format(number)
         require_file(record_path)
         record = json.loads(record_path.read_text())
-        residual = record.get('final_relative_full_residual')
-        if not isinstance(residual, (int, float)) or not math.isfinite(residual):
+        relative = record.get('final_relative_full_residual')
+        if not isinstance(relative, (int, float)) or not math.isfinite(relative):
             raise RuntimeError('{} has no finite residual score.'.format(record_path))
-        scored.append((float(residual), candidate))
-    residual, candidate = max(scored, key=lambda entry: entry[0])
+        # Residual.out is relative to each candidate's own IDW initial residual, so rank the
+        # absolute residual instead, as the original greedy does in runs.py getRes.
+        rom_dir, _ = screen_paths(settings, candidates['pod_index'], candidate['prom_point_index'])
+        initial = read_initial_residual_norm(rom_dir / 'log')
+        absolute = float(relative) * initial
+        scored.append((absolute, candidate, {
+            'candidate_number': number,
+            'sobol_index': candidate['sobol_index'],
+            'point': candidate['point'],
+            'initial_full_residual': initial,
+            'final_relative_full_residual': float(relative),
+            'final_absolute_full_residual': absolute,
+        }))
+    scored.sort(key=lambda entry: entry[0], reverse=True)
+    absolute, candidate, score = scored[0]
     write_json(selection, {
         'iteration': iteration,
         'pod_index': candidates['pod_index'],
-        'selection_indicator': candidates['indicator'],
+        'selection_indicator': INDICATOR,
         'selected_candidate': candidate,
-        'selected_final_relative_full_residual': residual,
-        'candidate_scores': [
-            {
-                'candidate_number': item[1]['candidate_number'],
-                'sobol_index': item[1]['sobol_index'],
-                'point': item[1]['point'],
-                'final_relative_full_residual': item[0],
-            }
-            for item in sorted(scored, key=lambda entry: entry[0], reverse=True)
-        ],
+        'selected_final_absolute_full_residual': absolute,
+        'selected_final_relative_full_residual': score['final_relative_full_residual'],
+        'candidate_scores': [entry[2] for entry in scored],
     })
-    print('Selected iteration {:03d}: {} with full residual {:.6e}.'.format(
-        iteration, candidate['point'], residual
+    print('Selected iteration {:03d}: {} with absolute full residual {:.6e} (relative {:.6e}).'.format(
+        iteration, candidate['point'], absolute, score['final_relative_full_residual']
     ))
 
 
@@ -505,7 +529,7 @@ def prepare_hdm(settings, iteration):
         'point': point,
         'selection': str(selection_path(iteration)),
         'selection_indicator': selection['selection_indicator'],
-        'selection_residual': selection['selected_final_relative_full_residual'],
+        'selection_residual': selection['selected_final_absolute_full_residual'],
         'laplace_xpost': xpost.name,
         'laplace_shift_range': laplace_range,
         'included_in_pod': False,
