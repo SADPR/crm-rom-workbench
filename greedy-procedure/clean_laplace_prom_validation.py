@@ -74,25 +74,63 @@ def check_clean_pod(settings):
         raise RuntimeError('Clean POD is incomplete: {}.'.format(', '.join(missing)))
 
 
+def block_bounds(text, block_name):
+    """Return the character range occupied by one AERO-F input block."""
+    match = re.search(r'under\s+{}\s*\{{'.format(re.escape(block_name)), text)
+    if match is None:
+        raise RuntimeError('Missing under {} block.'.format(block_name))
+    depth = 0
+    for index in range(match.start(), len(text)):
+        if text[index] == '{':
+            depth += 1
+        elif text[index] == '}':
+            depth -= 1
+            if depth == 0:
+                return match.start(), index + 1
+    raise RuntimeError('Unterminated under {} block.'.format(block_name))
+
+
+def block_indent(text, start):
+    """Return the indentation preceding one AERO-F input block."""
+    line_start = text.rfind('\n', 0, start) + 1
+    return text[line_start:start]
+
+
 def add_physical_state_output(input_path):
     """Write the physical PROM state for comparison without changing online shifts."""
     text = input_path.read_text()
-    marker = 'under NonlinearROM {'
-    start = text.find(marker)
-    if start < 0:
-        raise RuntimeError('Missing under NonlinearROM block in {}.'.format(input_path))
-    end = text.find('\n}', start)
-    if end < 0:
-        raise RuntimeError('Unterminated under NonlinearROM block in {}.'.format(input_path))
-    block = text[start:end]
-    if 'StateVector =' in block or 'OutputShiftVectorType =' in block:
-        raise RuntimeError('Unexpected state-output configuration in {}.'.format(input_path))
-    additions = (
-        '\n   StateVector = "State.bin";'
-        '\n   Frequency = 0;'
-        '\n   OutputShiftVectorType = None;'
+
+    # Remove the three fields from Output if this input came from the original
+    # failed attempt, where they were accidentally placed one level too high.
+    output_start, output_end = block_bounds(text, 'Output')
+    output_block = text[output_start:output_end]
+    output_field_indent = block_indent(text, output_start) + '   '
+    misplaced = re.compile(
+        r'^{}(?:StateVector|Frequency|OutputShiftVectorType)\s*=\s*[^;]*;\n?'.format(
+            re.escape(output_field_indent)
+        ),
+        re.MULTILINE,
     )
-    input_path.write_text(text[:end] + additions + text[end:])
+    output_block = misplaced.sub('', output_block)
+    text = text[:output_start] + output_block + text[output_end:]
+
+    start, end = block_bounds(text, 'NonlinearROM')
+    block = text[start:end]
+    field_indent = block_indent(text, start) + '   '
+    existing = re.compile(
+        r'^{}(?:StateVector|Frequency|OutputShiftVectorType)\s*=\s*[^;]*;\n?'.format(
+            re.escape(field_indent)
+        ),
+        re.MULTILINE,
+    )
+    block = existing.sub('', block)
+    additions = (
+        '{}StateVector = "State.bin";\n'
+        '{}Frequency = 0;\n'
+        '{}OutputShiftVectorType = None;\n'
+    ).format(field_indent, field_indent, field_indent)
+    block = block[:-1].rstrip() + '\n' + additions + block_indent(text, start) + '}'
+    input_path.write_text(text[:start] + block + text[end:])
 
 
 def prepare(settings):
