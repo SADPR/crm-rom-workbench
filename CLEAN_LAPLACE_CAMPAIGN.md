@@ -62,6 +62,12 @@ an HDM whose second stage misses `HDMtol2`.
    builds a new `ScalapackSVD` POD with the ScaLAPACK-enabled AERO-F binary.
 5. Submit `submit_clean_laplace_baseline.sbatch` to regenerate the nominal
    physical inspection case in an independent directory.
-6. Build and validate a PROM only from the clean POD and clean HDM database.
+6. Submit `submit_clean_laplace_prom_validation.sbatch` to validate the global
+   PROM at `HDMrun001`, using only `CleanLaplaceRuns/reductionrun032`. It
+   regenerates that online geometry's Laplace field, runs a full PROM, and
+   compares its physical state, lift, drag, and convergence with the clean
+   HDM. The PROM state is output with `OutputShiftVectorType = None` solely
+   for this comparison; the online formulation still uses
+   `ShiftVectorType = Laplace`.
 
 No job in this sequence overwrites the exploratory campaign or its backup.
