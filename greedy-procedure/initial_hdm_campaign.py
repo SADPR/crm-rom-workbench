@@ -53,9 +53,16 @@ def shared_files(settings):
     ]
 
 
-def prepare(settings, run_index):
-    """Prepare one isolated initial HDM run and its geometry-specific shift."""
-    point, point_count = get_point(settings, run_index)
+def prepare(settings, run_index, point=None):
+    """Prepare one isolated HDM run and its geometry-specific shift.
+
+    Without an explicit point, run_index selects a sample of the initial Sobol design.
+    """
+    if point is None:
+        point, point_count = get_point(settings, run_index)
+        source = 'sobolGenerator(..., include_corners=True)'
+    else:
+        point_count, source = None, 'explicit point'
     run_dir = Path(settings.InitHDMPreCompDir) / 'HDMrun{:03d}'.format(run_index)
     if run_dir.exists():
         raise RuntimeError('{} exists; refusing to overwrite it.'.format(run_dir))
@@ -89,7 +96,7 @@ def prepare(settings, run_index):
             'index': run_index,
             'point': point,
             'point_count': point_count,
-            'source': 'sobolGenerator(..., include_corners=True)',
+            'source': source,
         }, parameter_file, indent=2)
         parameter_file.write('\n')
     print('Prepared {} for {}'.format(run_dir, point))

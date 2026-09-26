@@ -31,10 +31,10 @@ What exists now:
 
 What comes next (approved plan, executed one phase at a time):
 
-1. Confirm details with Yihong and compare her `xdmf-files` Laplace setup.
-2. Write the 5D Sobol campaign driver and the test-set driver.
-3. Pilot of 4 HDMs: the easiest, the two hardest, and the central point.
-4. Training batches of 128 → 256 → 512 HDMs plus 32 independent test HDMs,
+1. Done: Yihong's Laplace boundary values match ours (Section 9), and the 5D
+   drivers exist (`sobol5d_campaign.py`, `sobol5d_test.py`, Section 14).
+2. Pilot of 4 HDMs: the easiest, the two hardest, and the central point.
+3. Training batches of 128 → 256 → 512 HDMs plus 32 independent test HDMs,
    with a go/no-go decision after each batch.
 
 The residual greedy was dropped (Section 13). Submitting jobs on Sherlock
@@ -160,8 +160,8 @@ there and do not replace it with workbench results.
 ### Yihong Zhu's reference data (read-only)
 
 ```text
-/home/users/zyh03/xdmf-files
-    Laplace inputs her runs used; she asked us to copy it into the project.
+/home/users/zyh03/xdmf_files
+    Her Laplace inputs and u* for the undeformed mesh (readable; not needed).
 /oak/stanford/groups/cfarhat/zyh03/
 /scratch/users/zyh03/FinalSnappingPaper
     Her final 5D runs and error reports, where readable.
@@ -501,9 +501,10 @@ An independent check on the holdout geometry confirmed the node mapping: in
 AERO-F node order, u* is exactly 1 on all 2698 `InletFixed_2` nodes and exactly
 0 on all 2698 `StickMoving_3` nodes. One solve takes about 45–55 s on 24 ranks.
 
-Yihong's runs used a folder `/home/users/zyh03/xdmf-files`. Before the 5D
-campaign, compare its facet tags and Laplace field with this named-boundary
-setup on the same mesh, and keep ours unless they differ.
+Yihong's `/home/users/zyh03/xdmf_files` holds her Laplace solution for the
+undeformed mesh. In AERO-F node order it is exactly 1 on `InletFixed_2` and 0
+on `StickMoving_3`, with mean 0.7290 (ours on the holdout geometry: 0.7287).
+Her boundary values therefore match ours, and the folder is not needed.
 
 ## 10. Campaign history and where the data are now
 
@@ -556,8 +557,8 @@ Yihong's surface-curve metric (Section 14), so they cannot be compared with
 her ~10% Cp error.
 
 The drivers for this campaign were removed from HEAD on 2026-09-25 and remain
-in git history. `clean_laplace_initial.py` stays until the 5D driver absorbs
-its helpers.
+in git history. The helpers of `clean_laplace_initial.py` now live in
+`sobol5d_campaign.py`.
 
 ### C. Cancelled greedy 32→40 (Sept 25)
 
@@ -687,25 +688,73 @@ delivered greedy (`runs.py` `getRes`) uses the absolute value. Any future
 greedy should rank by the absolute residual and use a cheap (HPROM)
 indicator.
 
-## 14. 5D validation plan
+## 14. 5D campaign: how to run and validate
 
-- **Test set:** 32 points from an independent low-discrepancy sequence
-  (scrambled Sobol, fixed seed), disjoint from the training points. Each gets
-  its own HDM outside the training root and is never added to a catalog.
-- **Evaluation:** the full PROM of every training batch (128, 256, 512) at
-  every test point.
-- **Metrics:**
-  - Yihong's surface Cp error, `ROMerror.getCp` + `cpL2error`: L2 over the
-    z = 0 wall nodes, top and bottom sorted by x, in percent;
-  - the same L2 for skin friction;
-  - drag and lift relative error;
-  - field L2 from `postprocess_clean_prom_comparison.py`;
-  - a snapping flag as in `checkSnapping.py`.
-- **Report:** mean, median and maximum per batch, and the number of snapped or
-  failed points. They are never excluded silently.
-- **Reference:** Yihong's Laplace-affine 5D greedy (her Fig. 3) gave a mean
-  surface-Cp error of 21% at 32 samples and 9–10% at 50–200, with maxima of
-  43–55%.
+### Design and roots
+
+- **Training:** `sobol5d_campaign.py` freezes 512 nested points in
+  `Sobol5DRuns/campaign.json`: the 32 corners, then unscrambled Sobol points,
+  so index 33 is the center. HDMs run in `Sobol5DPrecompute/`, and `assemble`
+  moves only converged ones into `Sobol5DRuns/`.
+- **Exclusions:** unconverged or invalid HDMs are listed under `excluded` for
+  their batch and stay in the precompute root.
+- **POD per batch:** each batch writes `reductionrunNNN/` with a copy of its
+  catalogs.
+- **Test set:** `sobol5d_test.py` freezes 32 scrambled-Sobol points (seed
+  20260925) in `Sobol5DTest/test.json`, disjoint from the design. Their truth
+  HDMs live in `Sobol5DTest/` and are never catalogued.
+- **PROMs:** each PROM copies its test HDM's geometry and Laplace shift, and
+  reads the IDW catalog of its own batch.
+- **Settings:** `configure_settings()` is the single place for the bounds,
+  `Beta = 0.5`, and the roots. `Sobol5DRuns/settings.effective.json` records
+  every effective setting.
+- **Logs:** all job logs go to `Sobol5DRuns/logs/`.
+
+### Commands
+
+From `greedy-procedure/` in the environment of Section 6. Never more than
+three 5-node jobs run at once:
+
+```bash
+python3 -B sobol5d_campaign.py init
+python3 -B sobol5d_test.py init
+
+# Pilot: index 1 builds the shared decomposition; 18, 32 and 33 wait for it.
+pilot=$(sbatch --parsable --array=1 submit_sobol5d_hdm.sbatch train)
+sbatch --dependency=afterok:${pilot} --array=18,32,33 submit_sobol5d_hdm.sbatch train
+
+# Batch 128, after the pilot is accepted, then the test set, POD, PROMs, metrics.
+train=$(sbatch --parsable --array=2-17,19-31,34-128%3 submit_sobol5d_hdm.sbatch train)
+test=$(sbatch --parsable --dependency=afterany:${train} --array=1-32%3 submit_sobol5d_hdm.sbatch test)
+pod=$(sbatch --parsable --dependency=afterany:${test} submit_sobol5d_pod.sbatch 128)
+prom=$(sbatch --parsable --dependency=afterok:${pod} --array=1-32%3 submit_sobol5d_prom.sbatch 128)
+sbatch --dependency=afterany:${prom} submit_sobol5d_metrics.sbatch 128
+
+python3 -B sobol5d_campaign.py audit --count 128     # read-only status at any time
+```
+
+`afterany` is deliberate: an unconverged HDM must not block the batch. The
+`assemble` step still refuses to build a POD while any HDM is missing or
+incomplete.
+
+### Metrics
+
+`metrics` writes `Sobol5DTest/metrics_podNNN.json`, and `summary` writes
+`error_curve.pdf`. Per test point, in percent:
+
+- surface Cp and skin friction, compared node by node on the z = 0 wall nodes
+  with Yihong's extraction (`runs.py` `getSkinForces`, the same as
+  `ROMerror.getCp`), in both L2 (`cpL2error`) and L1 (`saveResults`) forms;
+- drag and lift relative errors;
+- PROM iterations and final relative and absolute residuals.
+
+Points whose truth HDM or PROM is unavailable are listed under `not_counted`,
+never dropped silently. Field L2 and Exodus files for selected points come
+from `postprocess_clean_prom_comparison.py`. A snapping flag as in
+`checkSnapping.py` is not implemented yet.
+
+Reference: Yihong's Laplace-affine 5D greedy (her Fig. 3) gave a mean surface
+Cp error of 21% at 32 samples and 9–10% at 50–200, with maxima of 43–55%.
 
 ## 15. HPROM comes after the 5D global PROM is trusted
 
@@ -755,18 +804,21 @@ Her answers:
    wanted the transonic regime, which she considers a bit aggressive.
 2. Use `Beta = 0.5` instead of 1/3 for clean HDM convergence.
 3. She used the Laplace shift (`ShiftVectorType = Laplace`, also during the
-   HDM runs) and asked us to copy `/home/users/zyh03/xdmf-files`.
+   HDM runs) and pointed to her `/home/users/zyh03/xdmf_files`.
 4. Her greedy reached about 200 samples with ~10% surface-Cp error. She
    recommends Sobol with 500–1000 points, at about 20 min per HDM on 5 nodes.
 
-Open questions for her:
+Resolved from her readable files, without asking her again:
 
-1. The path to her final 5D run, with `settings.readonly` and
-   `SampledPointsOutput.txt`.
-2. Whether her curves come from `ROMerror.py` (L2) or
-   `GreedyAlgorithm.saveResults` (L1), how many evaluation points she used,
-   and whether she excluded snapped points.
-3. What `xdmf-files` contains and how her code uses it.
+1. **Final 5D settings.** Her readable `settings.readonly` files
+   (`/scratch/users/zyh03/FinalSnappingPaper_beta033/`) and her current
+   `codes/greedy-procedure/setup.py` are all 3D, `Beta = 1/3` and
+   `ShiftType = None`. The 5D values therefore come from her PDF and email;
+   everything else keeps the delivered defaults. Oak is not readable.
+2. **Error metric.** Whether her curves are L2 (`ROMerror.py`) or L1
+   (`saveResults`) is unknown, so we report both.
+3. **Laplace.** Her `xdmf_files` matches our Laplace boundary values
+   (Section 9).
 
 ## 18. Common failures and how to reason about them
 
