@@ -15,9 +15,9 @@ The objective is a **steady, global, nonlinear PROM** for a parametric NACA
 airfoil problem, later an HPROM, local/nonlinear manifolds, and unsteady URANS.
 
 On 2026-09-25 the target changed. Yihong Zhu, who built the original case,
-confirmed that her final study, and the regime Farhat asked for, is a
+confirmed that his final study, and the regime Farhat asked for, is a
 **5D transonic box** (Section 7). The 3D subsonic box we had been running came
-from the delivered `setup.py` and was never her final configuration.
+from the delivered `setup.py` and was never his final configuration.
 
 What exists now:
 
@@ -161,10 +161,10 @@ there and do not replace it with workbench results.
 
 ```text
 /home/users/zyh03/xdmf_files
-    Her Laplace inputs and u* for the undeformed mesh (readable; not needed).
+    His Laplace inputs and u* for the undeformed mesh (readable; not needed).
 /oak/stanford/groups/cfarhat/zyh03/
 /scratch/users/zyh03/FinalSnappingPaper
-    Her final 5D runs and error reports, where readable.
+    His final 5D runs and error reports, where readable.
 ```
 
 ## 4. Repository and Git model
@@ -501,10 +501,10 @@ An independent check on the holdout geometry confirmed the node mapping: in
 AERO-F node order, u* is exactly 1 on all 2698 `InletFixed_2` nodes and exactly
 0 on all 2698 `StickMoving_3` nodes. One solve takes about 45–55 s on 24 ranks.
 
-Yihong's `/home/users/zyh03/xdmf_files` holds her Laplace solution for the
+Yihong's `/home/users/zyh03/xdmf_files` holds his Laplace solution for the
 undeformed mesh. In AERO-F node order it is exactly 1 on `InletFixed_2` and 0
 on `StickMoving_3`, with mean 0.7290 (ours on the holdout geometry: 0.7287).
-Her boundary values therefore match ours, and the folder is not needed.
+His boundary values therefore match ours, and the folder is not needed.
 
 ## 10. Campaign history and where the data are now
 
@@ -554,7 +554,7 @@ Cp / skin friction L2    1.785% / 1.660%
 
 The Cp and skin-friction numbers are L2 over all mesh nodes. They are not
 Yihong's surface-curve metric (Section 14), so they cannot be compared with
-her ~10% Cp error.
+his ~10% Cp error.
 
 The drivers for this campaign were removed from HEAD on 2026-09-25 and remain
 in git history. The helpers of `clean_laplace_initial.py` now live in
@@ -750,10 +750,14 @@ incomplete.
 
 Points whose truth HDM or PROM is unavailable are listed under `not_counted`,
 never dropped silently. Field L2 and Exodus files for selected points come
-from `postprocess_clean_prom_comparison.py`. A snapping flag as in
-`checkSnapping.py` is not implemented yet.
+from `postprocess_clean_prom_comparison.py`.
 
-Reference: Yihong's Laplace-affine 5D greedy (her Fig. 3) gave a mean surface
+Snapping check: a surface-Cp version of `checkSnapping.py` compares the PROM wall
+Cp node by node with every training HDM of the batch. A PROM closer to some
+training HDM than to its own truth is listed under `snapping_suspects`, and it
+still counts in the statistics.
+
+Reference: Yihong's Laplace-affine 5D greedy (his Fig. 3) gave a mean surface
 Cp error of 21% at 32 samples and 9–10% at 50–200, with maxima of 43–55%.
 
 ## 15. HPROM comes after the 5D global PROM is trusted
@@ -798,26 +802,26 @@ For unsteady ROM design, distinguish carefully between:
 
 ## 17. Yihong's answers (2026-09-25) and open questions
 
-Her answers:
+His answers:
 
-1. She varied all five parameters, with the ranges of Section 7. Farhat
-   wanted the transonic regime, which she considers a bit aggressive.
+1. He varied all five parameters, with the ranges of Section 7. Farhat
+   wanted the transonic regime, which he considers a bit aggressive.
 2. Use `Beta = 0.5` instead of 1/3 for clean HDM convergence.
-3. She used the Laplace shift (`ShiftVectorType = Laplace`, also during the
-   HDM runs) and pointed to her `/home/users/zyh03/xdmf_files`.
-4. Her greedy reached about 200 samples with ~10% surface-Cp error. She
+3. He used the Laplace shift (`ShiftVectorType = Laplace`, also during the
+   HDM runs) and pointed to his `/home/users/zyh03/xdmf_files`.
+4. His greedy reached about 200 samples with ~10% surface-Cp error. He
    recommends Sobol with 500–1000 points, at about 20 min per HDM on 5 nodes.
 
-Resolved from her readable files, without asking her again:
+Resolved from his readable files, without asking him again:
 
-1. **Final 5D settings.** Her readable `settings.readonly` files
-   (`/scratch/users/zyh03/FinalSnappingPaper_beta033/`) and her current
+1. **Final 5D settings.** His readable `settings.readonly` files
+   (`/scratch/users/zyh03/FinalSnappingPaper_beta033/`) and his current
    `codes/greedy-procedure/setup.py` are all 3D, `Beta = 1/3` and
-   `ShiftType = None`. The 5D values therefore come from her PDF and email;
+   `ShiftType = None`. The 5D values therefore come from his PDF and email;
    everything else keeps the delivered defaults. Oak is not readable.
-2. **Error metric.** Whether her curves are L2 (`ROMerror.py`) or L1
+2. **Error metric.** Whether his curves are L2 (`ROMerror.py`) or L1
    (`saveResults`) is unknown, so we report both.
-3. **Laplace.** Her `xdmf_files` matches our Laplace boundary values
+3. **Laplace.** His `xdmf_files` matches our Laplace boundary values
    (Section 9).
 
 ## 18. Common failures and how to reason about them
