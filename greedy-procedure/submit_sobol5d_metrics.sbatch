@@ -5,7 +5,7 @@
 #SBATCH --partition=cfarhat
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --time=02:00:00
+#SBATCH --time=04:00:00
 #SBATCH --mem=32G
 #SBATCH --output=Sobol5DRuns/logs/metrics_%j.out
 #SBATCH --error=Sobol5DRuns/logs/metrics_%j.err

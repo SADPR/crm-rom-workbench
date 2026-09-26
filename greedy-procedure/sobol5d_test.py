@@ -157,9 +157,9 @@ def run_prom(count, index):
     print('Completed PROM {} at test point {:03d}.'.format(count, index))
 
 
-def merge_surface_fields(frg, run_directory):
-    """Merge the distributed Cp and skin-friction results once per run."""
-    for field in ('PressureCoefficient', 'SkinFriction'):
+def merge_surface_fields(frg, run_directory, fields=('PressureCoefficient', 'SkinFriction')):
+    """Merge the distributed surface results once per run."""
+    for field in fields:
         output = run_directory / 'postpro/{}.xpost'.format(field)
         if output.is_file() and output.stat().st_size > 0:
             continue
@@ -167,6 +167,26 @@ def merge_surface_fields(frg, run_directory):
                               '{}/postpro/{}'.format(run_directory, field), field, log='/dev/null')
         if not output.is_file():
             raise RuntimeError('Merge did not produce {}.'.format(output))
+
+
+def wall_nodes(top_file, raw_nodes):
+    """Return the zero-based airfoil wall nodes on the z = 0 plane, in mesh order."""
+    nodes, inside = set(), False
+    with open(top_file) as top:
+        for line in top:
+            if line.startswith('Elements'):
+                inside = line.split()[1] == 'StickMoving_3'
+            elif inside:
+                parts = line.split()
+                if len(parts) >= 5:
+                    nodes.update(int(value) - 1 for value in parts[2:])
+    index = np.array(sorted(nodes))
+    return index[raw_nodes[index, 3] == 0.0]
+
+
+def wall_pressure(run_directory, wall):
+    """Return the merged pressure coefficient at the wall nodes."""
+    return np.loadtxt(run_directory / 'postpro/PressureCoefficient.xpost', skiprows=3)[wall]
 
 
 def surface_curves(settings, run_directory, raw_nodes):
@@ -201,7 +221,7 @@ def prom_residual(rom_dir):
     return int(rows[-1][0]), relative, absolute
 
 
-def point_metrics(settings, frg, raw_nodes, count, index):
+def point_metrics(settings, frg, raw_nodes, count, index, wall, training_cp):
     """Compare one PROM against its truth HDM on the airfoil surface and in forces."""
     hdm = hdm_dir(index)
     rom_dir, _ = prom_paths(settings, count, index)
@@ -220,8 +240,16 @@ def point_metrics(settings, frg, raw_nodes, count, index):
     hdm_lift, hdm_drag = lift_drag(hdm)
     rom_lift, rom_drag = lift_drag(rom_dir)
     iterations, relative, absolute = prom_residual(rom_dir)
+    # Surface-Cp version of checkSnapping.py: flag a PROM that sits closer to some training
+    # HDM than to its own truth, comparing wall nodes one to one.
+    rom_wall = wall_pressure(rom_dir, wall)
+    distances = {key: relative_error(rom_wall, values, 2) for key, values in training_cp.items()}
+    nearest = min(distances, key=distances.get)
     return {
         'status': 'ok',
+        'nearest_training_index': nearest,
+        'nearest_training_cp_l2': distances[nearest],
+        'snapping_suspect': distances[nearest] < relative_error(rom_wall, wall_pressure(hdm, wall), 2),
         'cp_l2': relative_error(rom_cp, hdm_cp, 2),
         'cp_l1': relative_error(rom_cp, hdm_cp, 1),
         'sf_l2': relative_error(rom_sf, hdm_sf, 2),
@@ -242,10 +270,16 @@ def metrics(count):
         geom_pre='{}data/{}'.format(settings.MasterDir, settings.GeometryPrefix),
     )
     raw_nodes = np.loadtxt('{}_nodes'.format(settings.TopFilePath), dtype=np.float64)
+    wall = wall_nodes('{}.top'.format(settings.TopFilePath), raw_nodes)
+    training_cp = {}
+    for training_index in campaign.read_manifest()['batches'][str(count)]['included']:
+        directory = campaign.run_dir(training_index, settings.MasterDir)
+        merge_surface_fields(frg, directory, fields=('PressureCoefficient',))
+        training_cp[training_index] = wall_pressure(directory, wall)
     points = read_points()
     per_point = {}
     for index, point in enumerate(points, start=1):
-        result = point_metrics(settings, frg, raw_nodes, count, index)
+        result = point_metrics(settings, frg, raw_nodes, count, index, wall, training_cp)
         result['point'] = point
         per_point['{:03d}'.format(index)] = result
     valid = [value for value in per_point.values() if value['status'] == 'ok']
@@ -261,6 +295,8 @@ def metrics(count):
         'pod': count,
         'unit': 'percent relative error; cp/sf over the z = 0 wall nodes',
         'counted': len(valid),
+        'snapping_suspects': [key for key, value in per_point.items()
+                              if value.get('snapping_suspect')],
         'not_counted': {key: value['status'] for key, value in per_point.items()
                         if value['status'] != 'ok'},
         'aggregate': aggregate,
@@ -268,7 +304,9 @@ def metrics(count):
     }
     output = Path(TEST_DIR) / 'metrics_pod{:03d}.json'.format(count)
     campaign.write_json(output, summary)
-    print('Wrote {}: {} of {} test points counted.'.format(output, len(valid), len(points)))
+    print('Wrote {}: {} of {} test points counted, {} snapping suspects.'.format(
+        output, len(valid), len(points), len(summary['snapping_suspects'])
+    ))
     for name, values in aggregate.items():
         print('  {:6s} mean {:8.3f}  median {:8.3f}  max {:8.3f}'.format(
             name, values['mean'], values['median'], values['max']
@@ -301,8 +339,9 @@ def summary():
     figure.savefig(Path(TEST_DIR) / 'error_curve.pdf')
     plt.close(figure)
     for data in batches:
-        print('N = {:3d}: {} counted; cp_l2 mean {:.3f} max {:.3f}; sf_l2 mean {:.3f} max {:.3f}'.format(
-            data['pod'], data['counted'],
+        print('N = {:3d}: {} counted, {} snapping suspects; cp_l2 mean {:.3f} max {:.3f}; '
+              'sf_l2 mean {:.3f} max {:.3f}'.format(
+            data['pod'], data['counted'], len(data['snapping_suspects']),
             data['aggregate']['cp_l2']['mean'], data['aggregate']['cp_l2']['max'],
             data['aggregate']['sf_l2']['mean'], data['aggregate']['sf_l2']['max'],
         ))
