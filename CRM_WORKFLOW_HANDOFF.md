@@ -737,6 +737,23 @@ python3 -B sobol5d_campaign.py audit --count 128     # read-only status at any t
 `assemble` step still refuses to build a POD while any HDM is missing or
 incomplete.
 
+### Stage 3 for unconverged HDMs
+
+An HDM that reaches `MaxItsHDM2` (9000) above `HDMtol2` can be restarted once
+from its last state, with up to 15 000 iterations and the same tolerance.
+Run it before the next batch's `assemble`, never more than three at a time:
+
+```bash
+sbatch --array=20,37,85,117%3 submit_sobol5d_hdm.sbatch train-extend
+sbatch --array=LIST%3 submit_sobol5d_hdm.sbatch test-extend
+```
+
+- `input3` is `input2` with `MaxIts = 15000` and the snapshot prefix
+  `snapshots3/`, so the final state is frame 1 of a new file.
+- `stage3.json` records the result, and `assemble` points the catalogs to
+  that file.
+- A point that still misses the tolerance stays excluded and listed.
+
 ### Metrics
 
 `metrics` writes `Sobol5DTest/metrics_podNNN.json`, and `summary` writes

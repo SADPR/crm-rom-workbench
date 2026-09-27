@@ -29,6 +29,9 @@ UPPER_BOUNDS = [0.8, 2.0, 0.4, 0.03, 0.12]
 RECONSTRUCTION_BETA = 0.5
 MAX_COUNT = 512
 BATCH_COUNTS = (128, 256, 512)
+# A third HDM stage restarts unconverged runs; its state goes to a new file with one frame.
+EXTENDED_MAX_ITS = 15000
+STAGE3_SNAPSHOTS = 'snapshots3'
 
 
 def configure_settings():
@@ -221,6 +224,58 @@ def run(settings, run_index):
     print('Validated {} with final residual {:.6e}.'.format(directory, residual))
 
 
+def extend(settings, run_index):
+    """Restart one unconverged HDM from its last state with more iterations (stage 3)."""
+    directory = run_dir(run_index, settings.InitHDMPreCompDir)
+    input3 = directory / 'input3'
+    if input3.exists():
+        raise RuntimeError('{} exists; refusing to repeat a stage-3 restart.'.format(input3))
+    previous = initial_pod.read_final_residual(directory)
+    if previous <= settings.HDMtol2:
+        raise RuntimeError('HDM {:03d} already meets the tolerance.'.format(run_index))
+    aerof = os.environ.get('AEROF')
+    if not aerof or not Path(aerof).is_file():
+        raise RuntimeError('AEROF must name the built AERO-F executable.')
+
+    prefix = '{}HDMrun{:03d}/'.format(settings.InitHDMPreCompDir, run_index)
+    text = (directory / 'input2').read_text()
+    for old, new in (
+        ('MaxIts = {};'.format(settings.MaxItsHDM2), 'MaxIts = {};'.format(EXTENDED_MAX_ITS)),
+        ('Prefix = "{}snapshots/";'.format(prefix),
+         'Prefix = "{}{}/";'.format(prefix, STAGE3_SNAPSHOTS)),
+    ):
+        if text.count(old) != 1:
+            raise RuntimeError('Cannot find {!r} exactly once in {}.'.format(old, directory / 'input2'))
+        text = text.replace(old, new)
+    (directory / STAGE3_SNAPSHOTS).mkdir()
+    input3.write_text(text)
+
+    hpc = pyaeroopt.interface.Hpc(machine='independence', batch=False, bg=False,
+                                  nproc=settings.HDMnproc)
+    hpc.mpi = os.environ.get('MPI', 'srun')
+    command = hpc.execute_str(aerof, str(input3))
+    print(command, flush=True)
+    with open(directory / 'log3', 'w') as log_file:
+        result = subprocess.run(command, shell=True, stdout=log_file, stderr=subprocess.STDOUT,
+                                check=False)
+    if result.returncode != 0:
+        raise RuntimeError('AERO-F stage 3 failed; inspect {}.'.format(directory / 'log3'))
+    for suffix in ('001', '{:03d}'.format(settings.HDMnclust)):
+        state = directory / STAGE3_SNAPSHOTS / 'State.bin{}'.format(suffix)
+        if not state.is_file():
+            raise RuntimeError('Missing {}'.format(state))
+    residual = initial_pod.read_final_residual(directory)
+    write_json(directory / 'stage3.json', {
+        'max_its': EXTENDED_MAX_ITS,
+        'snapshot': '{}/State.bin'.format(STAGE3_SNAPSHOTS),
+        'snap_index': 1,
+        'previous_residual': previous,
+        'final_residual': residual,
+    })
+    final_residual(directory, settings.HDMtol2)
+    print('Stage 3 of {} reached {:.6e}.'.format(directory, residual))
+
+
 def classify(settings, index, point):
     """Return the state, final residual, and directory of one design point."""
     locations = [run_dir(index, root) for root in (settings.MasterDir, settings.InitHDMPreCompDir)]
@@ -238,6 +293,8 @@ def classify(settings, index, point):
         directory / 'snapshots/State.bin{:03d}'.format(settings.HDMnclust),
         directory / 'postpro/Residual.out',
     ]
+    if (directory / 'stage3.json').is_file():
+        required.append(directory / STAGE3_SNAPSHOTS / 'State.bin{:03d}'.format(settings.HDMnclust))
     if not all(path.is_file() for path in required):
         return 'incomplete', None, directory
     if json.loads(required[0].read_text()).get('point') != point:
@@ -279,7 +336,11 @@ def assemble(settings, count):
         target = run_dir(index, settings.MasterDir)
         if directory != target:
             directory.rename(target)
-        entries.append({'index': index, 'point': manifest['points'][index - 1], 'target': target})
+        entry = {'index': index, 'point': manifest['points'][index - 1], 'target': target}
+        if (target / 'stage3.json').is_file():
+            stage3 = json.loads((target / 'stage3.json').read_text())
+            entry['snapshot'], entry['snap_index'] = stage3['snapshot'], stage3['snap_index']
+        entries.append(entry)
     state_path, parameter_path = initial_pod.catalog_paths(settings)
     initial_pod.write_atomically(state_path, initial_pod.snapshot_catalog(settings, entries))
     initial_pod.write_atomically(parameter_path, initial_pod.parameter_catalog(settings, entries))
@@ -352,7 +413,8 @@ def build_pod(settings, count):
 def main():
     """Run one explicit stage of the 5D Sobol campaign."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('mode', choices=('init', 'point', 'prepare', 'run', 'audit', 'assemble', 'pod'))
+    parser.add_argument('mode', choices=('init', 'point', 'prepare', 'run', 'extend', 'audit',
+                                         'assemble', 'pod'))
     parser.add_argument('--run-index', type=int)
     parser.add_argument('--count', type=int)
     args = parser.parse_args()
@@ -360,15 +422,17 @@ def main():
     settings = configure_settings()
     if args.mode == 'init':
         initialize(settings)
-    elif args.mode in ('point', 'prepare', 'run'):
+    elif args.mode in ('point', 'prepare', 'run', 'extend'):
         if args.run_index is None:
             raise ValueError('--run-index is required for {}.'.format(args.mode))
         if args.mode == 'point':
             print('{}/{} {}'.format(args.run_index, MAX_COUNT, read_manifest()['points'][args.run_index - 1]))
         elif args.mode == 'prepare':
             prepare(settings, args.run_index)
-        else:
+        elif args.mode == 'run':
             run(settings, args.run_index)
+        else:
+            extend(settings, args.run_index)
     else:
         if args.count is None or not 1 <= args.count <= MAX_COUNT:
             raise ValueError('--count must be in [1, {}].'.format(MAX_COUNT))

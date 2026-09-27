@@ -108,14 +108,19 @@ def inspect_run(run_dir, index, point, settings):
     return residual
 
 
+def snapshot_file(settings, entry):
+    """Return an entry's state file and frame; restarted HDMs may override both."""
+    return (entry.get('snapshot', 'snapshots/State.bin'),
+            entry.get('snap_index', settings.SnapIndex))
+
+
 def snapshot_catalog(settings, entries):
     """Format the state snapshot catalog consumed by AERO-F POD."""
     lines = ['{}\n'.format(len(entries))]
     for entry in entries:
+        snapshot, index = snapshot_file(settings, entry)
         lines.append(
-            '{}/snapshots/State.bin {} {} 1 1 \n'.format(
-                entry['target'].as_posix(), settings.SnapIndex, settings.SnapIndex
-            )
+            '{}/{} {} {} 1 1 \n'.format(entry['target'].as_posix(), snapshot, index, index)
         )
     return ''.join(lines)
 
@@ -124,11 +129,8 @@ def parameter_catalog(settings, entries):
     """Format the parametric-state catalog used for ROM initial conditions."""
     lines = ['{}\n'.format(len(entries)), '{}\n'.format(len(entries[0]['point']))]
     for entry in entries:
-        lines.append(
-            '{}/snapshots/State.bin {}\n'.format(
-                entry['target'].as_posix(), settings.SnapIndex
-            )
-        )
+        snapshot, index = snapshot_file(settings, entry)
+        lines.append('{}/{} {}\n'.format(entry['target'].as_posix(), snapshot, index))
         lines.extend('{}\n'.format(value) for value in entry['point'])
     return ''.join(lines)
 
