@@ -350,7 +350,8 @@ def summary():
 def main():
     """Run one explicit stage of the 5D test set."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('mode', choices=('init', 'prepare-hdm', 'run-hdm', 'prom', 'metrics', 'summary'))
+    parser.add_argument('mode', choices=('init', 'prepare-hdm', 'run-hdm', 'extend-hdm', 'prom',
+                                         'metrics', 'summary'))
     parser.add_argument('--test-index', type=int)
     parser.add_argument('--pod', type=int)
     args = parser.parse_args()
@@ -361,7 +362,7 @@ def main():
     if args.mode == 'summary':
         summary()
         return
-    if args.mode in ('prepare-hdm', 'run-hdm', 'prom'):
+    if args.mode in ('prepare-hdm', 'run-hdm', 'extend-hdm', 'prom'):
         if args.test_index is None or not 1 <= args.test_index <= TEST_COUNT:
             raise ValueError('--test-index must be in [1, {}].'.format(TEST_COUNT))
     if args.mode in ('prom', 'metrics') and args.pod is None:
@@ -370,6 +371,8 @@ def main():
         prepare_hdm(args.test_index)
     elif args.mode == 'run-hdm':
         run_hdm(args.test_index)
+    elif args.mode == 'extend-hdm':
+        campaign.extend(test_settings(), args.test_index)
     elif args.mode == 'prom':
         run_prom(args.pod, args.test_index)
     else:

@@ -15,7 +15,7 @@ set -euo pipefail
 work_dir=${SLURM_SUBMIT_DIR:?Submit this script from greedy-procedure/.}
 repo_dir=$(cd "${work_dir}/.." && pwd)
 cd "${work_dir}"
-set_name=${1:?Usage: sbatch --array=LIST%3 submit_sobol5d_hdm.sbatch train|test}
+set_name=${1:?Usage: sbatch --array=LIST%3 submit_sobol5d_hdm.sbatch train|test|train-extend|test-extend}
 index=${SLURM_ARRAY_TASK_ID:?Submit this script as an array, even for one index.}
 
 [[ "${SLURM_NTASKS}" -eq 120 ]] || {
@@ -60,8 +60,14 @@ case "${set_name}" in
         python3 -B sobol5d_test.py prepare-hdm --test-index "${index}"
         python3 -B sobol5d_test.py run-hdm --test-index "${index}"
         ;;
+    train-extend)
+        python3 -B sobol5d_campaign.py extend --run-index "${index}"
+        ;;
+    test-extend)
+        python3 -B sobol5d_test.py extend-hdm --test-index "${index}"
+        ;;
     *)
-        echo "Unknown set ${set_name}; use train or test." >&2
+        echo "Unknown set ${set_name}; use train, test, train-extend or test-extend." >&2
         exit 2
         ;;
 esac
