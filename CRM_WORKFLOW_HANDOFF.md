@@ -33,9 +33,14 @@ What comes next (approved plan, executed one phase at a time):
 
 1. Done: Yihong's Laplace boundary values match ours (Section 9), and the 5D
    drivers exist (`sobol5d_campaign.py`, `sobol5d_test.py`, Section 14).
-2. Pilot of 4 HDMs: the easiest, the two hardest, and the central point.
-3. Training batches of 128 → 256 → 512 HDMs plus 32 independent test HDMs,
-   with a go/no-go decision after each batch.
+2. Done: pilot of 4 HDMs (the easiest, the two hardest, and the central point).
+3. Done: batch 128 (124 converged; stage 3 later recovered 20, 85 and 117,
+   while 37 stays at 6.8e-7) and the POD-128 evaluation on the 32 test HDMs.
+   The mean surface-Cp error is 11.0% (median 5.8%, max 31%). It is good below
+   M ≈ 0.72; above that the PROM misplaces the shock.
+4. Running: batch 256, then its POD and evaluation, with a go/no-go before 512.
+5. Next: the projected-truth diagnostic (Section 14) tells whether the transonic
+   error comes from the basis or from the LSPG solve.
 
 The residual greedy was dropped (Section 13). Submitting jobs on Sherlock
 remains an explicit human action.
@@ -772,7 +777,57 @@ from `postprocess_clean_prom_comparison.py`.
 Snapping check: a surface-Cp version of `checkSnapping.py` compares the PROM wall
 Cp node by node with every training HDM of the batch. A PROM closer to some
 training HDM than to its own truth is listed under `snapping_suspects`, and it
-still counts in the statistics.
+still counts in the statistics. The flag is only a surrogate. At POD 128 the 11
+flagged PROMs put the shock where lower-Mach training HDMs have it, yet they
+stay 7–17% away from the closest training HDM. They misplace the shock rather
+than copy a snapshot.
+
+PROM iterations: each of the 30 outer iterations uses all 30 Newton steps.
+`Eps = 1e-10` is unreachable for LSPG, so every PROM stops at `MaxIts`. The first
+outer iteration moves the reduced coordinates by 23–66%, and the other 29 move
+them by at most 2.4% in total. The forces at iteration 5 match those at
+iteration 30 to a median of 0.1%. Iteration 0 (the IDW initial condition) is
+kept in `liftdrag.out`, `force.out` and `ReducedCoords.out`. Its wall Cp is the
+IDW average of the training wall Cp.
+
+### Projected-truth diagnostic
+
+`sobol5d_projection.py` asks two questions: can the basis represent a test
+truth, and does the LSPG solve keep that state? HDM snapshots store
+`U - Ushift`, and the PROM uses `U = Ushift + V q`. With the 32 test truths as
+the IDW catalog, AERO-F gives the entry at the operating point weight one, so
+the PROM starts from the orthogonal projection of its truth. AERO-F precomputes
+the IC coordinates offline, so the diagnostic works on a full copy of the
+batch's bases in `Sobol5DRuns/evaluate/projectionNNN/`:
+
+```bash
+sbatch submit_sobol5d_projection.sbatch 128            # test points 3 19 23 30 5
+sbatch submit_sobol5d_projection.sbatch 128 3 14 5     # or an explicit list
+```
+
+The job runs these steps:
+
+1. `prepare`: copies the bases and writes the truth catalogs and the
+   preprocessing input (`ComputePOD = False`, `UseExistingClusters = True`).
+2. `preprocess`: computes the truth IC coordinates and the state projection
+   errors of all 32 truths (`state.proj` under `nonlinearrom/`).
+3. `prom`, once per test point: reruns the original PROM input, changing only
+   the IC catalog, the paths, `MaxIts = 5` and `Frequency = 5`. Iteration 0 is
+   therefore the projection.
+4. `metrics`: writes `metrics.json` with the wall Cp, lift, drag and full
+   residual of the projection, of the PROM started from it, and of the original
+   PROM. `ic_is_projection` checks that iteration 0 equals the offline
+   coordinates.
+
+How to read it:
+
+- **Projection bad:** the basis lacks the shock. The fix is more snapshots or
+  local bases.
+- **Projection good, and the PROM stays near it with a lower residual than the
+  original:** the IDW start leads to a worse minimum. Fix the start or the
+  globalization.
+- **Projection good, but the PROM returns to the original state:** the LSPG
+  residual minimizer itself is wrong, and more snapshots alone will not fix it.
 
 Reference: Yihong's Laplace-affine 5D greedy (his Fig. 3) gave a mean surface
 Cp error of 21% at 32 samples and 9–10% at 50–200, with maxima of 43–55%.
