@@ -829,6 +829,61 @@ How to read it:
 - **Projection good, but the PROM returns to the original state:** the LSPG
   residual minimizer itself is wrong, and more snapshots alone will not fix it.
 
+Result for POD 128 (job 45728544): the PROM barely moves the shock from its
+start. Wall-Cp error, projection → PROM from it → original PROM:
+
+| Point | Projection | PROM from it | Original PROM |
+|---|---|---|---|
+| 019 | 20.5% | 6.5% | 30.5% |
+| 023 | 6.0% | 4.8% | 25.8% |
+| 030 | 35.9% | 17.8% | 23.4% |
+| 005 | 0.7% | 2.2% | 3.0% |
+
+At 003 the projection is non-physical (negative density and pressure at the
+shocks) and its PROM crashes. The IDW start of the original PROMs averages ~55
+states; its wall Cp is Σ w_j Cp_j of the training HDMs.
+
+### Start-by-form sweep
+
+`sobol5d_sweep.py` crosses 5 PROM starts with 3 residual forms at 16 test
+points: the 11 flagged ones plus 002, 005, 022, 026 and 032. Every run patches
+the original PROM input and changes only the start, `Form`, `MaxIts = 5`,
+`Frequency = 5`, and the output fields it does not need. Geometry and the
+Laplace shift are read from the truth HDM.
+
+| Start | What it is |
+|---|---|
+| `idw100` | the original IDW start (100 neighbors, exponent 2) |
+| `idw8` | IDW over the 8 nearest catalog states |
+| `delaunay` | Delaunay barycentric weights (`LinearNDInterpolator`, `rescale=True`, as in `GreedyAlgorithm`) |
+| `rbf` | RBF weights (linear kernel, degree-1 polynomial, unit-cube parameters) |
+| `projection` | the projected truth from the diagnostic (a reference, not a practical start) |
+
+The forms are `NonDescriptor` (R = F/V, the default), `Descriptor` (R = F) and
+`Hybrid` (R = F/√V). Delaunay and RBF weights go through `InterpICWeights`.
+Offline, the median start error over the 32 test points is 28.3% (IDW-100),
+13.9% (IDW-8), 10.2% (Delaunay) and 6.9% (RBF).
+
+```bash
+scontrol hold <batch-256 array>              # optional: keep our node count down
+python3 -B sobol5d_sweep.py init --pod 128   # login node, seconds
+sweep=$(sbatch --parsable --array=1-240%3 submit_sobol5d_sweep.sbatch 128)
+sbatch --dependency=afterany:${sweep} submit_sobol5d_sweep_metrics.sbatch 128
+```
+
+`metrics.json` lists each run with these fields:
+- its status (`ok`, `crashed`, `missing`, `unmerged` or `invalid-output`);
+- the start and final wall-Cp errors, and its distance to the original PROM;
+- lift and drag;
+- residuals, in its own form only;
+- `convergence`, the change of q over the last iteration;
+- `start_check`, which says whether iteration 0 equals the expected IC.
+
+It also aggregates each configuration over the flagged and the good points.
+The practical choice is the configuration with the lowest flagged median that
+does not worsen the good points by more than one point and has no crashes. That
+choice is then confirmed on all 32 points before the POD-256 evaluation.
+
 Reference: Yihong's Laplace-affine 5D greedy (his Fig. 3) gave a mean surface
 Cp error of 21% at 32 samples and 9–10% at 50–200, with maxima of 43–55%.
 
