@@ -12,6 +12,7 @@ import types
 
 import numpy as np
 import pyaeroopt
+import scipy.interpolate
 from scipy.stats import qmc
 
 import initial_hdm_campaign
@@ -57,6 +58,51 @@ def prom_paths(settings, count, index):
             root / 'evaluate/hromruns{:03d}/point{:03d}/Laplace-bin'.format(count, index))
 
 
+def catalog_points(pod):
+    """Return the parameters of a batch's IDW catalog, in catalog order."""
+    lines = (pod / 'parsoldata.txt').read_text().split('\n')
+    count, size = int(lines[0]), int(lines[1])
+    return np.array([[float(value) for value in lines[3 + entry * (size + 1):2 + (entry + 1) * (size + 1)]]
+                     for entry in range(count)])
+
+
+def unit_cube(catalog, point):
+    """Normalize a point with the catalog's min/max per parameter, as AERO-F does."""
+    lower, upper = catalog.min(axis=0), catalog.max(axis=0)
+    return (np.asarray(point, dtype=float) - lower) / (upper - lower)
+
+
+def idw_weights(catalog, point, neighbors, exponent=2.0):
+    """Reproduce AERO-F's IDW weights over the nearest catalog entries."""
+    distance = np.linalg.norm(unit_cube(catalog, catalog) - unit_cube(catalog, point), axis=1)
+    distance = distance ** exponent
+    keep = np.argsort(distance, kind='stable')[:neighbors]
+    weights = np.zeros(len(catalog))
+    weights[keep] = 1.0 / distance[keep]
+    return weights / weights.sum()
+
+
+def interpolation_weights(start, catalog, point):
+    """Return the external IC weights of a Delaunay or RBF start, one per catalog entry."""
+    if start == 'delaunay':
+        interpolator = scipy.interpolate.LinearNDInterpolator(catalog, np.eye(len(catalog)),
+                                                              rescale=True)
+        weights = interpolator(np.asarray(point, dtype=float))[0]
+    else:
+        interpolator = scipy.interpolate.RBFInterpolator(unit_cube(catalog, catalog),
+                                                         np.eye(len(catalog)), kernel='linear',
+                                                         degree=1)
+        weights = interpolator(unit_cube(catalog, point)[None, :])[0]
+    if np.isnan(weights).any() or abs(weights.sum() - 1.0) > 1e-8:
+        raise RuntimeError('Invalid {} weights at {}.'.format(start, point))
+    return weights
+
+
+def write_weights(path, weights):
+    """Write IC weights in the format AERO-F reads through InterpICWeights."""
+    path.write_text('{}\n'.format(len(weights)) + ''.join('{:.17e}\n'.format(value) for value in weights))
+
+
 def initialize():
     """Freeze an independent scrambled-Sobol test set, disjoint from the training design."""
     if Path(TEST_DIR).exists():
@@ -99,8 +145,12 @@ def run_hdm(index):
     print('Validated {} with final residual {:.6e}.'.format(hdm_dir(index), residual))
 
 
-def run_prom(count, index):
-    """Run the frozen-POD PROM of one batch at one converged test point."""
+def run_prom(count, index, start='idw', iterations=None):
+    """Run the frozen-POD PROM of one batch at one converged test point.
+
+    `start` is AERO-F's IDW guess ('idw') or Delaunay weights ('delaunay', the POD-128 sweep
+    winner); `iterations` replaces the outer MaxIts of runs.py.
+    """
     settings = campaign.configure_settings()
     pod = campaign.pod_dir(settings, count)
     catalog = pod / 'parsoldata.txt'
@@ -132,16 +182,29 @@ def run_prom(count, index):
     # The root catalogs follow the latest batch; the IDW guess must use this batch's copy.
     input_file = rom_dir / 'input'
     text = input_file.read_text()
-    root_catalog = 'MultipleSolutionsData = "{}parsoldata.txt";'.format(settings.MasterDir)
-    if text.count(root_catalog) != 1:
-        raise RuntimeError('Cannot find the IDW catalog entry in {}.'.format(input_file))
-    input_file.write_text(text.replace(root_catalog,
-                                       'MultipleSolutionsData = "{}";'.format(catalog.as_posix())))
+    replacements = [('MultipleSolutionsData = "{}parsoldata.txt";'.format(settings.MasterDir),
+                     'MultipleSolutionsData = "{}";'.format(catalog.as_posix()))]
+    if iterations is not None:
+        replacements.append(('   MaxIts = {};\n   Eps = 1e-10;'.format(settings.MaxItsHROM),
+                             '   MaxIts = {};\n   Eps = 1e-10;'.format(iterations)))
+    if start == 'delaunay':
+        weights = rom_dir / 'icweights.txt'
+        write_weights(weights, interpolation_weights('delaunay', catalog_points(pod),
+                                                     read_points()[index - 1]))
+        replacements.append(('InterpICWeights = "";',
+                             'InterpICWeights = "{}";'.format(weights.as_posix())))
+    for old, new in replacements:
+        if text.count(old) != 1:
+            raise RuntimeError('Cannot find {!r} exactly once in {}.'.format(old, input_file))
+        text = text.replace(old, new)
+    input_file.write_text(text)
     campaign.write_json(rom_dir / 'prom.json', {
         'pod': str(pod),
         'idw_catalog': str(catalog),
         'test_index': index,
         'geometry_and_laplace_from': str(hdm),
+        'start': start,
+        'iterations': settings.MaxItsHROM if iterations is None else iterations,
     })
 
     hpc = pyaeroopt.interface.Hpc(machine='independence', batch=False, bg=False,
@@ -354,6 +417,9 @@ def main():
                                          'metrics', 'summary'))
     parser.add_argument('--test-index', type=int)
     parser.add_argument('--pod', type=int)
+    parser.add_argument('--start', choices=('idw', 'delaunay'), default='idw',
+                        help='PROM start; the default keeps the original IDW guess')
+    parser.add_argument('--its', type=int, help='outer PROM iterations (runs.py uses 30)')
     args = parser.parse_args()
 
     if args.mode == 'init':
@@ -374,7 +440,7 @@ def main():
     elif args.mode == 'extend-hdm':
         campaign.extend(test_settings(), args.test_index)
     elif args.mode == 'prom':
-        run_prom(args.pod, args.test_index)
+        run_prom(args.pod, args.test_index, start=args.start, iterations=args.its)
     else:
         metrics(args.pod)
 

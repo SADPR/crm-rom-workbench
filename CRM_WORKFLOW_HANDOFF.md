@@ -884,6 +884,42 @@ The practical choice is the configuration with the lowest flagged median that
 does not worsen the good points by more than one point and has no crashes. That
 choice is then confirmed on all 32 points before the POD-256 evaluation.
 
+Result for POD 128 (arrays 45742965/45742967, 2026-09-29): 237 of 240 runs
+succeeded; the 3 crashes are the projection at 003. Wall-Cp median error:
+
+| Configuration | 11 flagged | 5 good | Max |
+|---|---|---|---|
+| IDW-100 + NonDescriptor (original) | 23.3% | 4.0% | 31.0% |
+| Delaunay + NonDescriptor | **17.4%** | **3.5%** | **23.7%** |
+| RBF + NonDescriptor | 17.6% | 3.9% | 28.6% |
+| IDW-8 + NonDescriptor | 19.9% | 3.6% | 30.9% |
+| Projection + NonDescriptor (ceiling) | 15.4% | 3.2% | 25.4% |
+
+- NonDescriptor wins on the transonic points for every start. Descriptor and
+  Hybrid are only slightly better on the good points.
+- The gains are uneven:
+  - large at 003, 011, 019, 023 and 027;
+  - none at 006, 030 and 031;
+  - worse at 010.
+- Every `start_check` is below 5e-13, and 95% of runs change q by less than
+  0.5% at iteration 5.
+
+A sweep has a name (`--name`, default `sweep`), a point list, a subset of starts
+and forms, and an iteration count. The confirmation of the winner on all test
+points and a 30-iteration drift check are two more named sweeps:
+
+```bash
+python3 -B sobol5d_sweep.py init --pod 128 --name confirm --points 1-32 --starts delaunay --forms nondescriptor
+python3 -B sobol5d_sweep.py init --pod 128 --name drift --points 3,11,19,23 --starts delaunay --forms nondescriptor --its 30
+sbatch --array=1-32%3 submit_sobol5d_sweep.sbatch 128 confirm
+sbatch --time=01:30:00 --array=1-4%3 submit_sobol5d_sweep.sbatch 128 drift
+```
+
+For new batches, the standard evaluation takes the same start directly:
+`sbatch --array=1-32%3 submit_sobol5d_prom.sbatch 256 --start delaunay --its 5`.
+It writes the Delaunay weights to `icweights.txt` in each PROM directory, and
+records the start and the iteration count in `prom.json`.
+
 Reference: Yihong's Laplace-affine 5D greedy (his Fig. 3) gave a mean surface
 Cp error of 21% at 32 samples and 9–10% at 50–200, with maxima of 43–55%.
 
