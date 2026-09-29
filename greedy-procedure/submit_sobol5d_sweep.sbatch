@@ -14,7 +14,8 @@ set -euo pipefail
 
 work_dir=${SLURM_SUBMIT_DIR:?Submit this script from greedy-procedure/.}
 cd "${work_dir}"
-count=${1:?Usage: sbatch --array=1-240%3 submit_sobol5d_sweep.sbatch COUNT}
+count=${1:?Usage: sbatch --array=1-N%3 submit_sobol5d_sweep.sbatch COUNT [NAME]}
+name=${2:-sweep}
 run=${SLURM_ARRAY_TASK_ID:?Submit this script as an array, even for one index.}
 
 [[ "${SLURM_NTASKS}" -eq 120 ]] || {
@@ -39,4 +40,4 @@ export MKL_NUM_THREADS=1
     exit 1
 }
 
-python3 -B sobol5d_sweep.py prom --pod "${count}" --run "${run}"
+python3 -B sobol5d_sweep.py prom --pod "${count}" --name "${name}" --run "${run}"

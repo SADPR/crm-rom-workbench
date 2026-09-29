@@ -14,7 +14,8 @@ set -euo pipefail
 
 work_dir=${SLURM_SUBMIT_DIR:?Submit this script from greedy-procedure/.}
 cd "${work_dir}"
-count=${1:?Usage: sbatch submit_sobol5d_sweep_metrics.sbatch COUNT}
+count=${1:?Usage: sbatch submit_sobol5d_sweep_metrics.sbatch COUNT [NAME]}
+name=${2:-sweep}
 
 module purge
 module load cmake/3.24.2 gcc/10.1.0 openmpi/4.1.2 imkl/2019
@@ -22,4 +23,4 @@ module load cmake/3.24.2 gcc/10.1.0 openmpi/4.1.2 imkl/2019
 source /scratch/users/sadpr/Code3Aug/miniconda3/etc/profile.d/conda.sh
 conda activate GreedyAEROF
 
-python3 -B sobol5d_sweep.py metrics --pod "${count}"
+python3 -B sobol5d_sweep.py metrics --pod "${count}" --name "${name}"
