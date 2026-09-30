@@ -952,6 +952,43 @@ records the start and the iteration count in `prom.json`.
 Reference: Yihong's Laplace-affine 5D greedy (his Fig. 3) gave a mean surface
 Cp error of 21% at 32 samples and 9–10% at 50–200, with maxima of 43–55%.
 
+### POD 256 and the local (clustered) PROM
+
+POD 256 (2026-09-30) has 253 snapshots and 245 modes. HDMs 37, 137 and 229
+stay unconverged; the five stage-3 states read frame 3. Evaluated with Delaunay
+and 5 iterations, the wall-Cp error over the 32 test points is:
+
+| POD | Mean | Median | Max | Mean for M ≥ 0.72 |
+|---|---|---|---|---|
+| 256 | 7.0% | 3.6% | 30.9% | 12.9% |
+| 128, same configuration | 7.4% | 5.1% | 23.7% | 13.4% |
+
+The transonic error plateaus, so the next step is local bases instead of batch 512.
+
+`sobol5d_local.py pod --count N --clusters K --overlap P` builds a clustered POD
+in `reductionrunN-cK` from the global `input.pod`. It changes only `NumClusters`,
+`PercentOverlap` (20, as in HGV2) and a fixed `KMeansRandomSeed`; AERO-F seeds
+from the clock otherwise. It records the actual cluster count, the snapshots
+per cluster and the basis sizes in `local.json`.
+
+AERO-F clusters U − Ushift snapshots by k-means and gives each cluster its own
+POD. The PROM starts in the cluster closest to the IC and may switch once per
+outer iteration, using the PreprocessForProjections products. `NumClusters` in
+the PROM must be the actual count.
+
+`submit_sobol5d_local.sbatch COUNT K [P]` builds the POD and initializes the
+sweep `localK_` over the 32 test points (Delaunay, NonDescriptor, 5 iterations):
+
+```bash
+local=$(sbatch --parsable submit_sobol5d_local.sbatch 256 4 20)
+sweep=$(sbatch --parsable --dependency=afterok:${local} --array=1-32%3 submit_sobol5d_sweep.sbatch 256 local4_)
+sbatch --dependency=afterok:${local},afterany:${sweep} submit_sobol5d_sweep_metrics.sbatch 256 local4_
+```
+
+With `--basis`, the sweep metrics also report `start_cluster`, `final_cluster`
+and `cluster_switches`. `start_check` is taken against the starting cluster's
+IC products.
+
 ## 15. HPROM comes after the 5D global PROM is trusted
 
 The planned HPROM order is:
