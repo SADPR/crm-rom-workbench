@@ -6,7 +6,9 @@ from collections import Counter
 import json
 import os
 from pathlib import Path
+import re
 import shutil
+import struct
 import subprocess
 
 import numpy as np
@@ -268,12 +270,63 @@ def extend(settings, run_index):
     write_json(directory / 'stage3.json', {
         'max_its': EXTENDED_MAX_ITS,
         'snapshot': '{}/State.bin'.format(STAGE3_SNAPSHOTS),
-        'snap_index': 1,
+        'snap_index': repair_stage3_files(directory),
+        'header_repaired': True,
         'previous_residual': previous,
         'final_residual': residual,
     })
     final_residual(directory, settings.HDMtol2)
     print('Stage 3 of {} reached {:.6e}.'.format(directory, residual))
+
+
+# A restart opens its snapshot files for appending, so a new file never gets the header's
+# byte-order marker, and the frames before the restart step stay zero. Only the last frame
+# holds the stage-3 state.
+STAGE3_FILES = re.compile(r'State\.bin(\.shift|\.dt)?\d{3}$')
+
+
+def repair_stage3_files(directory):
+    """Write the missing byte-order marker of every stage-3 snapshot file; return its last frame."""
+    frames = set()
+    for path in sorted((directory / STAGE3_SNAPSHOTS).iterdir()):
+        if not STAGE3_FILES.match(path.name):
+            continue
+        with open(path, 'r+b') as handle:
+            header = handle.read(24)
+            marker, _, nodes, dim, count = struct.unpack('<id3i', header)
+            size = 24 + count * (8 + 8 * nodes * dim)
+            if marker not in (0, 1) or nodes <= 0 or dim <= 0 or count <= 0 or path.stat().st_size != size:
+                raise RuntimeError('Unexpected stage-3 file layout in {}.'.format(path))
+            if path.name.startswith('State.bin') and path.name[9:].isdigit():
+                handle.seek(24 + (count - 1) * (8 + 8 * nodes * dim) + 8)
+                last = np.frombuffer(handle.read(8 * nodes * dim), dtype='<f8')
+                if not np.isfinite(last).all() or not last.any():
+                    raise RuntimeError('The last frame of {} is empty or invalid.'.format(path))
+            if marker == 0:
+                handle.seek(0)
+                handle.write(struct.pack('<i', 1))
+        frames.add(count)
+    if len(frames) != 1:
+        raise RuntimeError('Stage-3 files of {} disagree on the frame count: {}.'.format(
+            directory, sorted(frames)))
+    return frames.pop()
+
+
+def repair_stage3(settings, count):
+    """Repair the snapshot headers and frame index of every stage-3 HDM up to count."""
+    for index in range(1, count + 1):
+        for root in (settings.MasterDir, settings.InitHDMPreCompDir):
+            directory = run_dir(index, root)
+            record = directory / 'stage3.json'
+            if not record.is_file():
+                continue
+            stage3 = json.loads(record.read_text())
+            frame = repair_stage3_files(directory)
+            if stage3.get('header_repaired') and stage3['snap_index'] == frame:
+                continue
+            stage3.update(snap_index=frame, header_repaired=True)
+            write_json(record, stage3)
+            print('Repaired stage 3 of {}: snapshot frame {}.'.format(directory, frame))
 
 
 def classify(settings, index, point):
@@ -297,6 +350,9 @@ def classify(settings, index, point):
         required.append(directory / STAGE3_SNAPSHOTS / 'State.bin{:03d}'.format(settings.HDMnclust))
     if not all(path.is_file() for path in required):
         return 'incomplete', None, directory
+    if (directory / 'stage3.json').is_file() and not json.loads(
+            (directory / 'stage3.json').read_text()).get('header_repaired'):
+        return 'stage3-unrepaired', None, directory
     if json.loads(required[0].read_text()).get('point') != point:
         raise RuntimeError('HDM {:03d} does not match the frozen design.'.format(index))
     if float(json.loads(required[1].read_text()).get('range', 0.0)) <= 1.0e-12:
@@ -336,7 +392,8 @@ def assemble(settings, count):
     """Move converged HDMs into the training root and write the batch catalogs."""
     manifest = read_manifest()
     rows = audit(settings, count)
-    pending = [index for index, state, _, _ in rows if state in ('missing', 'incomplete')]
+    pending = [index for index, state, _, _ in rows
+               if state in ('missing', 'incomplete', 'stage3-unrepaired')]
     if pending:
         raise RuntimeError('HDMs still missing or incomplete: {}.'.format(pending))
     entries = []
@@ -424,7 +481,7 @@ def main():
     """Run one explicit stage of the 5D Sobol campaign."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('mode', choices=('init', 'point', 'prepare', 'run', 'extend', 'audit',
-                                         'extend-list', 'assemble', 'pod'))
+                                         'extend-list', 'repair-stage3', 'assemble', 'pod'))
     parser.add_argument('--run-index', type=int)
     parser.add_argument('--count', type=int)
     args = parser.parse_args()
@@ -448,6 +505,8 @@ def main():
             raise ValueError('--count must be in [1, {}].'.format(MAX_COUNT))
         if args.mode == 'audit':
             audit(settings, args.count)
+        elif args.mode == 'repair-stage3':
+            repair_stage3(settings, args.count)
         elif args.mode == 'extend-list':
             # One marked line, so a job script can read it past the pyaeroopt banner.
             print('EXTEND: {}'.format(','.join(str(index) for index in extend_candidates(settings, args.count))))
