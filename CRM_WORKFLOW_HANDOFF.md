@@ -783,6 +783,23 @@ sbatch --array=LIST%3 submit_sobol5d_hdm.sbatch test-extend
     stage 3) before it recovers.
   - Every M < 0.75 HDM converges in about 2 200 iterations. The slow and
     failing ones are at M ≥ 0.75 with a positive angle of attack.
+- `accept --run-index N` accepts, explicitly, a restarted HDM that misses
+  HDMtol2. The condition is that its lift and drag moved less than 0.1% over
+  its last 1 000 iterations.
+  - `accepted.json` records the reason, the residual and the drifts. It is
+    pinned to that residual, so a later restart voids it.
+  - The manifest lists these HDMs under `accepted`.
+  - 37, 137 and 229 were accepted on their stage-3 states. After 15 000
+    iterations their force drift (0.01–0.13% over 1 000–2 000 iterations)
+    matched that of HDMs that met 5e-7. 137 has the smallest drift of all,
+    while its residual oscillates.
+- `revert-restart --run-index N --stage 4` undoes a cancelled restart. It
+  restores the postpro histories from AERO-F's `*.back` copies and sets
+  `input4`, `log4` and `snapshots4` aside in `stage4-cancelled/`.
+- `submit_sobol5d_accept_tail.sbatch COUNT K [HDM...]` accepts the listed HDMs.
+  It then chains the global POD, its Delaunay PROMs and metrics, the local
+  POD with K clusters, and its sweep and metrics, with at most three 5-node
+  jobs at once.
   - The first POD-256 attempt (job 46026735) failed on this, and loudly:
     with the marker alone repaired, it would have used an all-zero frame.
 
