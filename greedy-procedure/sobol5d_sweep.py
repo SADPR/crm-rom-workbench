@@ -11,6 +11,7 @@ directory next to the first sweep.
 import argparse
 import json
 from pathlib import Path
+import re
 
 import numpy as np
 import pyaeroopt
@@ -59,13 +60,26 @@ def weights_path(root, start, index):
 
 
 def initialize(count, name='sweep', points=POINTS, starts=tuple(STARTS), forms=tuple(FORMS),
-               iterations=SWEEP_ITS):
-    """Freeze the run list and write the Delaunay and RBF weights of every point."""
+               iterations=SWEEP_ITS, basis=None):
+    """Freeze the run list and write the Delaunay and RBF weights of every point.
+
+    `basis` names a clustered reduction directory next to the global one (sobol5d_local.py);
+    its PROMs keep the global IDW catalog, whose IC products that POD also computed.
+    """
     settings = campaign.configure_settings()
     pod = campaign.pod_dir(settings, count)
     root = sweep_dir(settings, count, name)
     if root.exists():
         raise RuntimeError('{} exists; refusing to replace a sweep.'.format(root))
+    local = None
+    if basis is not None:
+        if 'projection' in starts:
+            raise ValueError('The projection start uses the global bases; drop it with --basis.')
+        record = Path(settings.MasterDir) / basis / 'local.json'
+        if not record.is_file():
+            raise RuntimeError('Missing {}; build the clustered POD first.'.format(record))
+        local = {'directory': str(Path(settings.MasterDir) / basis),
+                 'clusters': json.loads(record.read_text())['clusters']}
     if 'projection' in starts:
         diagnostic = projection.diagnostic_dir(settings, count)
         if not (diagnostic / 'log.projection').is_file():
@@ -101,18 +115,25 @@ def initialize(count, name='sweep', points=POINTS, starts=tuple(STARTS), forms=t
         'flagged': list(FLAGGED),
         'starts': {start: STARTS[start] for start in starts},
         'forms': {form: FORMS[form] for form in forms},
+        'basis': local,
         'runs': runs,
     })
     print('Initialized {} with {} runs.'.format(root, len(runs)))
 
 
-def sweep_input(settings, count, run, root, iterations):
+def sweep_input(settings, count, run, root, iterations, basis=None):
     """Return the original PROM input of the run's point with the sweep's changes applied."""
     index = run['point']
     pod = campaign.pod_dir(settings, count)
     original, original_laplace = test.prom_paths(settings, count, index)
     hdm = test.hdm_dir(index)
     directory = Path(run['directory'])
+    source = (original / 'input').read_text()
+    # Originals may already carry a start and an iteration count (sobol5d_test.py prom --start).
+    outer = re.findall(r'   MaxIts = \d+;\n   Eps = 1e-10;', source)
+    weights = re.findall(r'InterpICWeights = "[^"]*";', source)
+    if len(outer) != 1 or len(weights) != 1:
+        raise RuntimeError('Cannot find the outer MaxIts and InterpICWeights in {}.'.format(original))
     # The truth HDM holds this exact geometry and Laplace shift; the PROM only reads them.
     replacements = [
         ('Position = "{}/deform/Position.bin";'.format(original.as_posix()),
@@ -122,27 +143,36 @@ def sweep_input(settings, count, run, root, iterations):
         ('LaplaceSnapshotData = "{}/ushift.bin";'.format(original_laplace.as_posix()),
          'LaplaceSnapshotData = "{}/Laplace-bin/ushift.bin";'.format(hdm.as_posix()), 1),
         ('{}/'.format(original.as_posix()), '{}/'.format(directory.as_posix()), None),
-        ('   MaxIts = {};\n   Eps = 1e-10;'.format(settings.MaxItsHROM),
-         '   MaxIts = {};\n   Eps = 1e-10;'.format(iterations), 1),
+        (outer[0], '   MaxIts = {};\n   Eps = 1e-10;'.format(iterations), 1),
         # A positive frequency also writes iteration 0, the start.
         ('      Frequency = 0;', '      Frequency = {};'.format(iterations), 1),
         ('Form = NonDescriptor;', 'Form = {};'.format(FORMS[run['form']]), 1),
     ]
+    if basis is not None:
+        replacements += [
+            ('Prefix = "{}/";'.format(pod.as_posix()), 'Prefix = "{}/";'.format(basis['directory']), 1),
+            ('NumClusters = 1;', 'NumClusters = {};'.format(basis['clusters']), 1),
+        ]
     replacements += [(line, '{} = "";'.format(line.split(' = ')[0]), 1) for line in UNUSED_OUTPUTS]
     if run['start'] == 'idw8':
         replacements.append(('MaxInterpolatedSolutions = {};'.format(settings.MaxIntSols),
                              'MaxInterpolatedSolutions = 8;', 1))
-    elif run['start'] in ('delaunay', 'rbf'):
-        replacements.append(('InterpICWeights = "";', 'InterpICWeights = "{}";'.format(
+    # Only the Delaunay and RBF starts read external weights; the others must not inherit any.
+    # This goes first: an inherited weights path lies in the original directory, which the
+    # path replacement rewrites.
+    if run['start'] in ('delaunay', 'rbf'):
+        replacements.insert(0, (weights[0], 'InterpICWeights = "{}";'.format(
             weights_path(root, run['start'], index).as_posix()), 1))
-    elif run['start'] == 'projection':
+    elif weights[0] != 'InterpICWeights = "";':
+        replacements.insert(0, (weights[0], 'InterpICWeights = "";', 1))
+    if run['start'] == 'projection':
         diagnostic = projection.diagnostic_dir(settings, count)
         replacements += [
             ('MultipleSolutionsData = "{}";'.format((pod / 'parsoldata.txt').as_posix()),
              'MultipleSolutionsData = "{}";'.format((diagnostic / 'testsoldata.txt').as_posix()), 1),
             ('Prefix = "{}/";'.format(pod.as_posix()), 'Prefix = "{}/";'.format(diagnostic.as_posix()), 1),
         ]
-    text = projection.patch((original / 'input').read_text(), replacements, original / 'input')
+    text = projection.patch(source, replacements, original / 'input')
     if 'romruns{:03d}'.format(count) in text:
         raise RuntimeError('The sweep input of run {} still refers to romruns.'.format(run['run']))
     return text
@@ -158,7 +188,8 @@ def run_prom(count, number, name='sweep'):
     directory = Path(run['directory'])
     if directory.exists():
         raise RuntimeError('{} exists; refusing to overwrite a PROM.'.format(directory))
-    text = sweep_input(settings, count, run, sweep_dir(settings, count, name), sweep['iterations'])
+    text = sweep_input(settings, count, run, sweep_dir(settings, count, name), sweep['iterations'],
+                       sweep.get('basis'))
     original = test.prom_paths(settings, count, run['point'])[0]
     for folder in ('results', 'postpro'):
         (directory / folder).mkdir(parents=True)
@@ -175,8 +206,34 @@ def run_prom(count, number, name='sweep'):
         number, run['start'], run['form'], run['point']))
 
 
-def expected_start(settings, run, root, catalog, products, truth_products):
-    """Return the reduced coordinates the run's iteration 0 must hold."""
+def cluster_products(directory):
+    """Return the precomputed IC coordinates of every cluster, one row per catalog entry.
+
+    The ASCII file holds Dimension#1 (clusters), then per cluster Dimension#2 (entries), then
+    per entry Dimension#3 (that cluster's basis size) and its values.
+    """
+    lines = iter(line for line in (directory / 'nonlinearrom/state.basisUicProducts').read_text()
+                 .splitlines() if line.strip() and not line.startswith('MultiVecType'))
+    size = lambda: int(next(lines).split(':')[1])
+    clusters = []
+    for _ in range(size()):
+        entries = [[float(next(lines)) for _ in range(size())] for _ in range(size())]
+        clusters.append(np.array(entries))
+    return clusters
+
+
+def reduced_history(path):
+    """Return (cluster, coordinates) per outer iteration; the basis size changes with clusters."""
+    history = []
+    for line in path.read_text().splitlines():
+        if line.strip() and not line.lstrip().startswith('#'):
+            values = line.split()
+            history.append((int(float(values[1])), np.array([float(value) for value in values[3:]])))
+    return history
+
+
+def expected_start(settings, run, root, catalog, products, truth_products, cluster=0):
+    """Return the reduced coordinates the run's iteration 0 must hold in its starting cluster."""
     index = run['point']
     if run['start'] == 'projection':
         return truth_products[index - 1]
@@ -186,7 +243,7 @@ def expected_start(settings, run, root, catalog, products, truth_products):
     else:
         neighbors = settings.MaxIntSols if run['start'] == 'idw100' else 8
         weights = test.idw_weights(catalog, test.read_points()[index - 1], neighbors, settings.DistExp)
-    return weights @ products
+    return weights @ products[cluster]
 
 
 def run_metrics(settings, count, run, root, iterations, wall, catalog, products, truth_products):
@@ -211,8 +268,9 @@ def run_metrics(settings, count, run, root, iterations, wall, catalog, products,
     original = test.prom_paths(settings, count, index)[0]
     truth = test.wall_pressure(hdm, wall)
     truth_forces = projection.table(hdm / 'postpro/liftdrag.out')[-1]
-    coordinates = projection.table(directory / 'postpro/ReducedCoords.out')[:, 3:]
-    start = expected_start(settings, run, root, catalog, products, truth_products)
+    history = reduced_history(directory / 'postpro/ReducedCoords.out')
+    clusters = [cluster for cluster, _ in history]
+    start = expected_start(settings, run, root, catalog, products, truth_products, clusters[0])
     _, _, final_residual = test.prom_residual(directory)
     lift_start, drag_start = projection.force_errors(directory, truth_forces, 0)
     lift_final, drag_final = projection.force_errors(directory, truth_forces, -1)
@@ -220,9 +278,13 @@ def run_metrics(settings, count, run, root, iterations, wall, catalog, products,
         result,
         status='ok',
         frames=len(frames),
-        start_check=float(np.abs(coordinates[0] - start).max() / np.abs(start).max()),
-        convergence=float(np.linalg.norm(coordinates[-1] - coordinates[-2])
-                          / np.linalg.norm(coordinates[-1])),
+        start_check=float(np.abs(history[0][1] - start).max() / np.abs(start).max()),
+        # A switch in the last iteration leaves no comparable pair; report it as not converged.
+        convergence=(float(np.linalg.norm(history[-1][1] - history[-2][1])
+                           / np.linalg.norm(history[-1][1]))
+                     if clusters[-1] == clusters[-2] else float('inf')),
+        start_cluster=clusters[0], final_cluster=clusters[-1],
+        cluster_switches=sum(a != b for a, b in zip(clusters, clusters[1:])),
         cp_start=test.relative_error(frames[0], truth, 2),
         cp_final=test.relative_error(frames[-1], truth, 2),
         cp_final_vs_original=test.relative_error(frames[-1], test.wall_pressure(original, wall), 2),
@@ -249,7 +311,7 @@ def metrics(count, name='sweep'):
     raw_nodes = np.loadtxt('{}_nodes'.format(settings.TopFilePath), dtype=np.float64)
     wall = test.wall_nodes('{}.top'.format(settings.TopFilePath), raw_nodes)
     catalog = test.catalog_points(pod)
-    products = projection.ic_products(pod)
+    products = cluster_products(Path(sweep['basis']['directory']) if sweep.get('basis') else pod)
     truth_products = (projection.ic_products(projection.diagnostic_dir(settings, count))
                       if 'projection' in sweep['starts'] else None)
     runs = [run_metrics(settings, count, run, root, sweep['iterations'], wall, catalog, products,
@@ -313,6 +375,7 @@ def main():
     parser.add_argument('--starts', default=','.join(STARTS), help='for init, comma-separated')
     parser.add_argument('--forms', default=','.join(FORMS), help='for init, comma-separated')
     parser.add_argument('--its', type=int, default=SWEEP_ITS, help='for init, outer iterations')
+    parser.add_argument('--basis', help='for init, a clustered reduction directory, e.g. reductionrun256-c4')
     args = parser.parse_args()
 
     if args.mode == 'init':
@@ -321,7 +384,7 @@ def main():
             value for value in forms if value not in FORMS]
         if unknown or not all(1 <= index <= test.TEST_COUNT for index in args.points):
             raise ValueError('Unknown start, form, or test index: {}.'.format(unknown or args.points))
-        initialize(args.pod, args.name, args.points, starts, forms, args.its)
+        initialize(args.pod, args.name, args.points, starts, forms, args.its, args.basis)
     elif args.mode == 'prom':
         if args.run is None:
             raise ValueError('--run is required for prom.')
