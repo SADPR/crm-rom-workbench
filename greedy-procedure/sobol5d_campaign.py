@@ -37,6 +37,10 @@ EXTENDED_MAX_ITS = 15000
 STAGE4_MAX_ITS = 35000
 STAGE3_SNAPSHOTS = 'snapshots3'
 RESTART_STAGES = (3, 4)
+# An HDM that misses HDMtol2 after its restarts can still be accepted explicitly when its lift and
+# drag moved less than ACCEPT_DRIFT (relative) over its last ACCEPT_WINDOW iterations.
+ACCEPT_WINDOW = 1000
+ACCEPT_DRIFT = 1.0e-3
 
 
 def configure_settings():
@@ -299,6 +303,41 @@ def extend(settings, run_index, stage=3, max_its=None, cfl_max=None):
     print('Stage {} of {} reached {:.6e}.'.format(stage, directory, residual))
 
 
+def revert_restart(settings, run_index, stage):
+    """Undo a cancelled restart: restore the postpro histories and set its files aside.
+
+    AERO-F copies each postpro history to NAME.back when a restart starts and then appends to
+    NAME, so a restart cancelled before it wrote stage{N}.json is undone by restoring the copies.
+    Run it only after the restart's job has stopped.
+    """
+    directory = run_dir(run_index, settings.InitHDMPreCompDir)
+    if (directory / 'stage{}.json'.format(stage)).exists():
+        raise RuntimeError('Stage {} of HDM {:03d} finished; there is nothing to revert.'.format(
+            stage, run_index))
+    folder = {3: STAGE3_SNAPSHOTS, 4: 'snapshots4'}[stage]
+    moved = [directory / name for name in ('input{}'.format(stage), 'log{}'.format(stage), folder)]
+    if not moved[0].exists():
+        raise RuntimeError('HDM {:03d} has no stage-{} input.'.format(run_index, stage))
+    histories = sorted((directory / 'postpro').glob('*.back'))
+    if not histories:
+        raise RuntimeError('No postpro backups in {}.'.format(directory / 'postpro'))
+    for backup in histories:
+        current = backup.with_suffix('')
+        if not current.read_text().startswith(backup.read_text()):
+            raise RuntimeError('{} does not extend {}; refusing to restore.'.format(current, backup))
+    aside = directory / 'stage{}-cancelled'.format(stage)
+    aside.mkdir()
+    for path in moved:
+        if path.exists():
+            path.rename(aside / path.name)
+    for backup in histories:
+        current = backup.with_suffix('')
+        current.rename(aside / current.name)
+        shutil.copy2(backup, current)
+    print('Reverted stage {} of {}: residual back to {:.6e}; files set aside in {}.'.format(
+        stage, directory, initial_pod.read_final_residual(directory), aside))
+
+
 def latest_restart(directory):
     """Return the record of the latest restart of an HDM, or None."""
     for stage in reversed(RESTART_STAGES):
@@ -389,8 +428,50 @@ def classify(settings, index, point):
     if float(json.loads(required[1].read_text()).get('range', 0.0)) <= 1.0e-12:
         return 'constant-shift', None, directory
     residual = initial_pod.read_final_residual(directory)
-    state = 'converged' if residual <= settings.HDMtol2 else 'unconverged'
-    return state, residual, directory
+    if residual <= settings.HDMtol2:
+        return 'converged', residual, directory
+    accepted = directory / 'accepted.json'
+    if accepted.is_file() and json.loads(accepted.read_text()).get('residual') == residual:
+        return 'accepted', residual, directory
+    return 'unconverged', residual, directory
+
+
+def force_drift(directory, window=ACCEPT_WINDOW):
+    """Return the relative change of lift and drag over the last `window` iterations."""
+    rows = np.array([[float(value) for value in line.split()[:6]]
+                     for line in (directory / 'postpro/liftdrag.out').read_text().splitlines()
+                     if line.strip() and not line.lstrip().startswith('#')])
+    iterations, drag, lift = rows[:, 0], rows[:, 4], rows[:, 5]
+    start = np.searchsorted(iterations, iterations[-1] - window)
+    return (float(abs(lift[-1] - lift[start]) / abs(lift[-1])),
+            float(abs(drag[-1] - drag[start]) / abs(drag[-1])))
+
+
+def accept(settings, run_index, reason):
+    """Accept one restarted HDM that misses HDMtol2 but whose forces are stationary."""
+    point = read_manifest()['points'][run_index - 1]
+    state, residual, directory = classify(settings, run_index, point)
+    if state != 'unconverged':
+        raise RuntimeError('HDM {:03d} is {}; only unconverged HDMs can be accepted.'.format(
+            run_index, state))
+    if latest_restart(directory) is None:
+        raise RuntimeError('HDM {:03d} has had no restart; run stage 3 first.'.format(run_index))
+    lift, drag = force_drift(directory)
+    if max(lift, drag) >= ACCEPT_DRIFT:
+        raise RuntimeError('HDM {:03d}: lift/drag drift {:.2e}/{:.2e} over the last {} iterations '
+                           'exceeds {:.0e}.'.format(run_index, lift, drag, ACCEPT_WINDOW, ACCEPT_DRIFT))
+    # The residual pins the acceptance to this state; a later restart invalidates it.
+    write_json(directory / 'accepted.json', {
+        'reason': reason,
+        'residual': residual,
+        'tolerance': settings.HDMtol2,
+        'window': ACCEPT_WINDOW,
+        'lift_drift': lift,
+        'drag_drift': drag,
+        'snapshot': latest_restart(directory)['snapshot'],
+    })
+    print('Accepted HDM {:03d} at residual {:.3e}: lift/drag drift {:.2e}/{:.2e}.'.format(
+        run_index, residual, lift, drag))
 
 
 def audit(settings, count):
@@ -429,7 +510,7 @@ def assemble(settings, count):
         raise RuntimeError('HDMs still missing or incomplete: {}.'.format(pending))
     entries = []
     for index, state, _, directory in rows:
-        if state != 'converged':
+        if state not in ('converged', 'accepted'):
             continue
         target = run_dir(index, settings.MasterDir)
         if directory != target:
@@ -445,7 +526,9 @@ def assemble(settings, count):
     # Unconverged or invalid HDMs stay in the precompute root and are listed, never dropped silently.
     manifest['batches'][str(count)] = {
         'included': [entry['index'] for entry in entries],
-        'excluded': {str(index): state for index, state, _, _ in rows if state != 'converged'},
+        'accepted': {str(index): residual for index, state, residual, _ in rows if state == 'accepted'},
+        'excluded': {str(index): state for index, state, _, _ in rows
+                     if state not in ('converged', 'accepted')},
     }
     write_json(manifest_path(), manifest)
     print('Wrote catalogs for batch {} with {} snapshots.'.format(count, len(entries)))
@@ -512,24 +595,30 @@ def main():
     """Run one explicit stage of the 5D Sobol campaign."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('mode', choices=('init', 'point', 'prepare', 'run', 'extend', 'audit',
-                                         'extend-list', 'repair-stage3', 'assemble', 'pod'))
+                                         'extend-list', 'repair-stage3', 'accept', 'revert-restart',
+                                         'assemble', 'pod'))
     parser.add_argument('--run-index', type=int)
     parser.add_argument('--count', type=int)
     parser.add_argument('--stage', type=int, default=3, choices=RESTART_STAGES, help='for extend')
     parser.add_argument('--max-its', type=int, help='for extend, total iterations of the restart')
     parser.add_argument('--cfl-max', type=float, help='for extend, the CFL ceiling (inputs use 100)')
+    parser.add_argument('--reason', help='for accept, why the HDM is accepted')
     args = parser.parse_args()
 
     settings = configure_settings()
     if args.mode == 'init':
         initialize(settings)
-    elif args.mode in ('point', 'prepare', 'run', 'extend'):
+    elif args.mode in ('point', 'prepare', 'run', 'extend', 'accept', 'revert-restart'):
         if args.run_index is None:
             raise ValueError('--run-index is required for {}.'.format(args.mode))
         if args.mode == 'point':
             print('{}/{} {}'.format(args.run_index, MAX_COUNT, read_manifest()['points'][args.run_index - 1]))
         elif args.mode == 'prepare':
             prepare(settings, args.run_index)
+        elif args.mode == 'revert-restart':
+            revert_restart(settings, args.run_index, args.stage)
+        elif args.mode == 'accept':
+            accept(settings, args.run_index, args.reason or 'stationary lift and drag')
         elif args.mode == 'run':
             run(settings, args.run_index)
         else:
