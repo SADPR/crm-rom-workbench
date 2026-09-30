@@ -15,7 +15,7 @@ set -euo pipefail
 work_dir=${SLURM_SUBMIT_DIR:?Submit this script from greedy-procedure/.}
 repo_dir=$(cd "${work_dir}/.." && pwd)
 cd "${work_dir}"
-set_name=${1:?Usage: sbatch --array=LIST%3 submit_sobol5d_hdm.sbatch train|test|train-extend|test-extend}
+set_name=${1:?Usage: sbatch --array=LIST%3 submit_sobol5d_hdm.sbatch train|test|train-extend [--stage 4 --cfl-max C]|test-extend}
 index=${SLURM_ARRAY_TASK_ID:?Submit this script as an array, even for one index.}
 
 [[ "${SLURM_NTASKS}" -eq 120 ]] || {
@@ -61,7 +61,8 @@ case "${set_name}" in
         python3 -B sobol5d_test.py run-hdm --test-index "${index}"
         ;;
     train-extend)
-        python3 -B sobol5d_campaign.py extend --run-index "${index}"
+        # Extra arguments, e.g. --stage 4 --cfl-max 20, go to the restart.
+        python3 -B sobol5d_campaign.py extend --run-index "${index}" "${@:2}"
         ;;
     test-extend)
         python3 -B sobol5d_test.py extend-hdm --test-index "${index}"

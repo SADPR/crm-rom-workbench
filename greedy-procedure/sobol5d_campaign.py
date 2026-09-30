@@ -31,9 +31,12 @@ UPPER_BOUNDS = [0.8, 2.0, 0.4, 0.03, 0.12]
 RECONSTRUCTION_BETA = 0.5
 MAX_COUNT = 512
 BATCH_COUNTS = (128, 256, 512)
-# A third HDM stage restarts unconverged runs; its state goes to a new file with one frame.
+# Restarts of unconverged HDMs: stage 3 continues stage 2, and stage 4 continues stage 3. Each
+# writes a new snapshot folder. AERO-F counts iterations from the first stage, so MaxIts is a total.
 EXTENDED_MAX_ITS = 15000
+STAGE4_MAX_ITS = 35000
 STAGE3_SNAPSHOTS = 'snapshots3'
+RESTART_STAGES = (3, 4)
 
 
 def configure_settings():
@@ -226,12 +229,22 @@ def run(settings, run_index):
     print('Validated {} with final residual {:.6e}.'.format(directory, residual))
 
 
-def extend(settings, run_index):
-    """Restart one unconverged HDM from its last state with more iterations (stage 3)."""
+def extend(settings, run_index, stage=3, max_its=None, cfl_max=None):
+    """Restart one unconverged HDM from its last state with more iterations.
+
+    Stage 3 continues stage 2 up to EXTENDED_MAX_ITS iterations in total; stage 4 continues
+    stage 3 up to STAGE4_MAX_ITS. `cfl_max` lowers the CFL ceiling, which changes the path to
+    the steady state but not the converged state itself.
+    """
+    if stage not in RESTART_STAGES:
+        raise ValueError('Restart stages are {}.'.format(RESTART_STAGES))
     directory = run_dir(run_index, settings.InitHDMPreCompDir)
-    input3 = directory / 'input3'
-    if input3.exists():
-        raise RuntimeError('{} exists; refusing to repeat a stage-3 restart.'.format(input3))
+    source = directory / 'input{}'.format(stage - 1)
+    target = directory / 'input{}'.format(stage)
+    if target.exists():
+        raise RuntimeError('{} exists; refusing to repeat a stage-{} restart.'.format(target, stage))
+    if stage == 4 and not (directory / 'stage3.json').is_file():
+        raise RuntimeError('HDM {:03d} has no stage 3 to continue.'.format(run_index))
     previous = initial_pod.read_final_residual(directory)
     if previous <= settings.HDMtol2:
         raise RuntimeError('HDM {:03d} already meets the tolerance.'.format(run_index))
@@ -240,43 +253,59 @@ def extend(settings, run_index):
         raise RuntimeError('AEROF must name the built AERO-F executable.')
 
     prefix = '{}HDMrun{:03d}/'.format(settings.InitHDMPreCompDir, run_index)
-    text = (directory / 'input2').read_text()
-    for old, new in (
-        ('MaxIts = {};'.format(settings.MaxItsHDM2), 'MaxIts = {};'.format(EXTENDED_MAX_ITS)),
-        ('Prefix = "{}snapshots/";'.format(prefix),
-         'Prefix = "{}{}/";'.format(prefix, STAGE3_SNAPSHOTS)),
-    ):
+    folders = {2: 'snapshots', 3: STAGE3_SNAPSHOTS, 4: 'snapshots4'}
+    limits = {2: settings.MaxItsHDM2, 3: EXTENDED_MAX_ITS, 4: max_its or STAGE4_MAX_ITS}
+    replacements = [
+        ('MaxIts = {};'.format(limits[stage - 1]), 'MaxIts = {};'.format(limits[stage])),
+        ('Prefix = "{}{}/";'.format(prefix, folders[stage - 1]),
+         'Prefix = "{}{}/";'.format(prefix, folders[stage])),
+    ]
+    if cfl_max is not None:
+        replacements.append(('CflMax = 100;', 'CflMax = {};'.format(cfl_max)))
+    text = source.read_text()
+    for old, new in replacements:
         if text.count(old) != 1:
-            raise RuntimeError('Cannot find {!r} exactly once in {}.'.format(old, directory / 'input2'))
+            raise RuntimeError('Cannot find {!r} exactly once in {}.'.format(old, source))
         text = text.replace(old, new)
-    (directory / STAGE3_SNAPSHOTS).mkdir()
-    input3.write_text(text)
+    (directory / folders[stage]).mkdir()
+    target.write_text(text)
 
     hpc = pyaeroopt.interface.Hpc(machine='independence', batch=False, bg=False,
                                   nproc=settings.HDMnproc)
     hpc.mpi = os.environ.get('MPI', 'srun')
-    command = hpc.execute_str(aerof, str(input3))
+    command = hpc.execute_str(aerof, str(target))
     print(command, flush=True)
-    with open(directory / 'log3', 'w') as log_file:
+    log = directory / 'log{}'.format(stage)
+    with open(log, 'w') as log_file:
         result = subprocess.run(command, shell=True, stdout=log_file, stderr=subprocess.STDOUT,
                                 check=False)
     if result.returncode != 0:
-        raise RuntimeError('AERO-F stage 3 failed; inspect {}.'.format(directory / 'log3'))
+        raise RuntimeError('AERO-F stage {} failed; inspect {}.'.format(stage, log))
     for suffix in ('001', '{:03d}'.format(settings.HDMnclust)):
-        state = directory / STAGE3_SNAPSHOTS / 'State.bin{}'.format(suffix)
+        state = directory / folders[stage] / 'State.bin{}'.format(suffix)
         if not state.is_file():
             raise RuntimeError('Missing {}'.format(state))
     residual = initial_pod.read_final_residual(directory)
-    write_json(directory / 'stage3.json', {
-        'max_its': EXTENDED_MAX_ITS,
-        'snapshot': '{}/State.bin'.format(STAGE3_SNAPSHOTS),
-        'snap_index': repair_stage3_files(directory),
+    write_json(directory / 'stage{}.json'.format(stage), {
+        'max_its': limits[stage],
+        'cfl_max': cfl_max,
+        'snapshot': '{}/State.bin'.format(folders[stage]),
+        'snap_index': repair_stage3_files(directory, folders[stage]),
         'header_repaired': True,
         'previous_residual': previous,
         'final_residual': residual,
     })
     final_residual(directory, settings.HDMtol2)
-    print('Stage 3 of {} reached {:.6e}.'.format(directory, residual))
+    print('Stage {} of {} reached {:.6e}.'.format(stage, directory, residual))
+
+
+def latest_restart(directory):
+    """Return the record of the latest restart of an HDM, or None."""
+    for stage in reversed(RESTART_STAGES):
+        record = directory / 'stage{}.json'.format(stage)
+        if record.is_file():
+            return json.loads(record.read_text())
+    return None
 
 
 # A restart opens its snapshot files for appending, so a new file never gets the header's
@@ -285,10 +314,10 @@ def extend(settings, run_index):
 STAGE3_FILES = re.compile(r'State\.bin(\.shift|\.dt)?\d{3}$')
 
 
-def repair_stage3_files(directory):
-    """Write the missing byte-order marker of every stage-3 snapshot file; return its last frame."""
+def repair_stage3_files(directory, folder=STAGE3_SNAPSHOTS):
+    """Write the missing byte-order marker of every restart snapshot file; return its last frame."""
     frames = set()
-    for path in sorted((directory / STAGE3_SNAPSHOTS).iterdir()):
+    for path in sorted((directory / folder).iterdir()):
         if not STAGE3_FILES.match(path.name):
             continue
         with open(path, 'r+b') as handle:
@@ -313,20 +342,21 @@ def repair_stage3_files(directory):
 
 
 def repair_stage3(settings, count):
-    """Repair the snapshot headers and frame index of every stage-3 HDM up to count."""
+    """Repair the snapshot headers and frame index of every restarted HDM up to count."""
     for index in range(1, count + 1):
         for root in (settings.MasterDir, settings.InitHDMPreCompDir):
             directory = run_dir(index, root)
-            record = directory / 'stage3.json'
-            if not record.is_file():
-                continue
-            stage3 = json.loads(record.read_text())
-            frame = repair_stage3_files(directory)
-            if stage3.get('header_repaired') and stage3['snap_index'] == frame:
-                continue
-            stage3.update(snap_index=frame, header_repaired=True)
-            write_json(record, stage3)
-            print('Repaired stage 3 of {}: snapshot frame {}.'.format(directory, frame))
+            for stage in RESTART_STAGES:
+                record = directory / 'stage{}.json'.format(stage)
+                if not record.is_file():
+                    continue
+                restart = json.loads(record.read_text())
+                frame = repair_stage3_files(directory, restart['snapshot'].split('/')[0])
+                if restart.get('header_repaired') and restart['snap_index'] == frame:
+                    continue
+                restart.update(snap_index=frame, header_repaired=True)
+                write_json(record, restart)
+                print('Repaired stage {} of {}: snapshot frame {}.'.format(stage, directory, frame))
 
 
 def classify(settings, index, point):
@@ -346,13 +376,14 @@ def classify(settings, index, point):
         directory / 'snapshots/State.bin{:03d}'.format(settings.HDMnclust),
         directory / 'postpro/Residual.out',
     ]
-    if (directory / 'stage3.json').is_file():
-        required.append(directory / STAGE3_SNAPSHOTS / 'State.bin{:03d}'.format(settings.HDMnclust))
+    restart = latest_restart(directory)
+    if restart is not None:
+        required.append(directory / restart['snapshot'].split('/')[0]
+                        / 'State.bin{:03d}'.format(settings.HDMnclust))
     if not all(path.is_file() for path in required):
         return 'incomplete', None, directory
-    if (directory / 'stage3.json').is_file() and not json.loads(
-            (directory / 'stage3.json').read_text()).get('header_repaired'):
-        return 'stage3-unrepaired', None, directory
+    if restart is not None and not restart.get('header_repaired'):
+        return 'restart-unrepaired', None, directory
     if json.loads(required[0].read_text()).get('point') != point:
         raise RuntimeError('HDM {:03d} does not match the frozen design.'.format(index))
     if float(json.loads(required[1].read_text()).get('range', 0.0)) <= 1.0e-12:
@@ -393,7 +424,7 @@ def assemble(settings, count):
     manifest = read_manifest()
     rows = audit(settings, count)
     pending = [index for index, state, _, _ in rows
-               if state in ('missing', 'incomplete', 'stage3-unrepaired')]
+               if state in ('missing', 'incomplete', 'restart-unrepaired')]
     if pending:
         raise RuntimeError('HDMs still missing or incomplete: {}.'.format(pending))
     entries = []
@@ -404,9 +435,9 @@ def assemble(settings, count):
         if directory != target:
             directory.rename(target)
         entry = {'index': index, 'point': manifest['points'][index - 1], 'target': target}
-        if (target / 'stage3.json').is_file():
-            stage3 = json.loads((target / 'stage3.json').read_text())
-            entry['snapshot'], entry['snap_index'] = stage3['snapshot'], stage3['snap_index']
+        restart = latest_restart(target)
+        if restart is not None:
+            entry['snapshot'], entry['snap_index'] = restart['snapshot'], restart['snap_index']
         entries.append(entry)
     state_path, parameter_path = initial_pod.catalog_paths(settings)
     initial_pod.write_atomically(state_path, initial_pod.snapshot_catalog(settings, entries))
@@ -484,6 +515,9 @@ def main():
                                          'extend-list', 'repair-stage3', 'assemble', 'pod'))
     parser.add_argument('--run-index', type=int)
     parser.add_argument('--count', type=int)
+    parser.add_argument('--stage', type=int, default=3, choices=RESTART_STAGES, help='for extend')
+    parser.add_argument('--max-its', type=int, help='for extend, total iterations of the restart')
+    parser.add_argument('--cfl-max', type=float, help='for extend, the CFL ceiling (inputs use 100)')
     args = parser.parse_args()
 
     settings = configure_settings()
@@ -499,7 +533,7 @@ def main():
         elif args.mode == 'run':
             run(settings, args.run_index)
         else:
-            extend(settings, args.run_index)
+            extend(settings, args.run_index, args.stage, args.max_its, args.cfl_max)
     else:
         if args.count is None or not 1 <= args.count <= MAX_COUNT:
             raise ValueError('--count must be in [1, {}].'.format(MAX_COUNT))
