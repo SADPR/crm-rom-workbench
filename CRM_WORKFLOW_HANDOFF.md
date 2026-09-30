@@ -767,7 +767,22 @@ sbatch --array=LIST%3 submit_sobol5d_hdm.sbatch test-extend
     points `stage3.json` at the last frame (`header_repaired: true`).
   - `extend` now repairs after its run, and the POD job repairs before
     `assemble`.
-  - `assemble` refuses an unrepaired stage 3 (`stage3-unrepaired`).
+  - `assemble` refuses an unrepaired restart (`restart-unrepaired`).
+- Stage 4 continues stage 3 into `snapshots4/`, up to 35 000 iterations in
+  total. AERO-F counts iterations from the first stage, so MaxIts is a total.
+  `--cfl-max` lowers the CFL ceiling, which does not change a converged state.
+  `stage4.json` then supersedes `stage3.json` in the catalogs:
+
+  ```bash
+  sbatch --time=08:00:00 --array=37,229%3 submit_sobol5d_hdm.sbatch train-extend --stage 4
+  sbatch --time=08:00:00 --array=137 submit_sobol5d_hdm.sbatch train-extend --stage 4 --cfl-max 20
+  ```
+
+  - A restart begins at the CFL ceiling. The relative residual is already
+    small, so the first steps are large and the residual jumps (to ~5e-4 in
+    stage 3) before it recovers.
+  - Every M < 0.75 HDM converges in about 2 200 iterations. The slow and
+    failing ones are at M ≥ 0.75 with a positive angle of attack.
   - The first POD-256 attempt (job 46026735) failed on this, and loudly:
     with the marker alone repaired, it would have used an all-zero frame.
 
