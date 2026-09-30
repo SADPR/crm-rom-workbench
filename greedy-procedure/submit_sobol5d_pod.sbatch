@@ -40,5 +40,7 @@ export MKL_NUM_THREADS=1
     exit 1
 }
 
+# Stage-3 snapshot files need their header marker and last-frame index before assemble.
+python3 -B sobol5d_campaign.py repair-stage3 --count "${count}"
 python3 -B sobol5d_campaign.py assemble --count "${count}"
 python3 -B sobol5d_campaign.py pod --count "${count}"

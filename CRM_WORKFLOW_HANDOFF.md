@@ -758,6 +758,18 @@ sbatch --array=LIST%3 submit_sobol5d_hdm.sbatch test-extend
 - `stage3.json` records the result, and `assemble` points the catalogs to
   that file.
 - A point that still misses the tolerance stays excluded and listed.
+- A restart opens its snapshot files for appending. A new `snapshots3/` file
+  therefore never gets the header's byte-order marker (0 instead of 1), and
+  AERO-F then reads it as byte-swapped ("mismatch in size"). The frames before
+  the restart step stay zero, and the state is in the last frame (frame 3).
+  - `sobol5d_campaign.py repair-stage3 --count N` writes the marker, one byte
+    per file. It checks sizes and that the last frame is non-empty, and it
+    points `stage3.json` at the last frame (`header_repaired: true`).
+  - `extend` now repairs after its run, and the POD job repairs before
+    `assemble`.
+  - `assemble` refuses an unrepaired stage 3 (`stage3-unrepaired`).
+  - The first POD-256 attempt (job 46026735) failed on this, and loudly:
+    with the marker alone repaired, it would have used an all-zero frame.
 
 From batch 256 on, one job chains everything after the HDM array:
 
