@@ -759,6 +759,23 @@ sbatch --array=LIST%3 submit_sobol5d_hdm.sbatch test-extend
   that file.
 - A point that still misses the tolerance stays excluded and listed.
 
+From batch 256 on, one job chains everything after the HDM array:
+
+```bash
+sbatch --dependency=afterany:<HDM array> submit_sobol5d_batch_tail.sbatch 256
+```
+
+It runs on `normal` with one core, lists the stage-3 candidates
+(`sobol5d_campaign.py extend-list`: unconverged HDMs without `stage3.json`),
+and submits these jobs:
+1. their `train-extend` array;
+2. the POD job, which runs `assemble` and then `pod`;
+3. the 32 test PROMs with `--start delaunay --its 5`;
+4. the metrics, with an 8 h limit.
+
+If an HDM is `missing` or `incomplete`, for example after a node failure,
+`assemble` stops the chain at the POD job.
+
 ### Metrics
 
 `metrics` writes `Sobol5DTest/metrics_podNNN.json`, and `summary` writes
