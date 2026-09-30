@@ -322,6 +322,16 @@ def audit(settings, count):
     return rows
 
 
+def extend_candidates(settings, count):
+    """Return the unconverged HDMs up to count that have not had a stage-3 restart yet."""
+    candidates = []
+    for index, point in enumerate(read_manifest()['points'][:count], start=1):
+        state, _, directory = classify(settings, index, point)
+        if state == 'unconverged' and not (directory / 'stage3.json').is_file():
+            candidates.append(index)
+    return candidates
+
+
 def assemble(settings, count):
     """Move converged HDMs into the training root and write the batch catalogs."""
     manifest = read_manifest()
@@ -414,7 +424,7 @@ def main():
     """Run one explicit stage of the 5D Sobol campaign."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('mode', choices=('init', 'point', 'prepare', 'run', 'extend', 'audit',
-                                         'assemble', 'pod'))
+                                         'extend-list', 'assemble', 'pod'))
     parser.add_argument('--run-index', type=int)
     parser.add_argument('--count', type=int)
     args = parser.parse_args()
@@ -438,6 +448,9 @@ def main():
             raise ValueError('--count must be in [1, {}].'.format(MAX_COUNT))
         if args.mode == 'audit':
             audit(settings, args.count)
+        elif args.mode == 'extend-list':
+            # One marked line, so a job script can read it past the pyaeroopt banner.
+            print('EXTEND: {}'.format(','.join(str(index) for index in extend_candidates(settings, args.count))))
         elif args.mode == 'assemble':
             assemble(settings, args.count)
         else:
