@@ -18,8 +18,10 @@ import json
 import os
 from pathlib import Path
 import re
+import time
 
 import numpy as np
+import pyaeroopt
 
 import sobol5d_campaign as campaign
 import sobol5d_projection as projection
@@ -37,6 +39,10 @@ SPECTRUM_PADDING = 16
 # Output fields the unsteady test does not need; blanking them does not change the solve.
 UNUSED_OUTPUTS = ('FluxResidual = "FluxRes.bin";', 'Displacement = "Displacement.bin";')
 SPEED_OF_SOUND = (1.4 * 22632.0 / 0.3639) ** 0.5
+EXO_FIELDS = ('Mach', 'PressureCoefficient', 'SkinFriction', 'Velocity')
+# AERO-F appends a field frame every FIELD_EVERY steps (about 100 min) in a few seconds; merge
+# only when the last write is older than this, so no frame is read half written.
+WRITE_QUIET = 120.0
 
 
 def hdm_directory(settings, index):
@@ -204,11 +210,44 @@ def summary(index):
     print(json.dumps(result, indent=1))
 
 
+def exo(index):
+    """Merge the field frames written so far into one Exodus file; the run keeps going."""
+    settings = campaign.configure_settings()
+    directory = hdm_directory(settings, index)
+    results, out = directory / 'unsteady/results', directory / 'unsteady/exo'
+    written = [path for field in EXO_FIELDS for path in results.glob('{}.bin[0-9]*'.format(field))]
+    if not written:
+        raise RuntimeError('{} holds no field frames yet.'.format(results))
+    age = time.time() - max(path.stat().st_mtime for path in written)
+    if age < WRITE_QUIET:
+        raise RuntimeError('AERO-F wrote fields {:.0f} s ago; retry in a few minutes.'.format(age))
+    # The deformed mesh of this HDM, so the airfoil is the real one and not the NACA 0012.
+    top = directory / '{}_deformed.top'.format(Path(settings.TopFilePath).name)
+    frg = pyaeroopt.interface.Frg(top=str(top),
+                                  geom_pre='{}data/{}'.format(settings.MasterDir, settings.GeometryPrefix))
+    out.mkdir(exist_ok=True)
+    xposts = []
+    for field in EXO_FIELDS:
+        frg.sower_fluid_merge(str(results / '{}.bin'.format(field)), str(out / field), field,
+                              log=str(out / 'sower.log'))
+        xposts.append(out / '{}.xpost'.format(field))
+        if not xposts[-1].is_file():
+            raise RuntimeError('sower did not write {}; see {}.'.format(xposts[-1], out / 'sower.log'))
+    exo_file = out / 'unsteady_{:03d}.exo'.format(index)
+    if exo_file.exists():
+        exo_file.unlink()
+    decomposition = '{}.top.dec.{}'.format(settings.TopFilePath, settings.HDMnproc)
+    frg.run_xp2exo(str(exo_file), [decomposition] + [str(path) for path in xposts], log=str(out / 'xp2exo.log'))
+    if not exo_file.is_file():
+        raise RuntimeError('xp2exo did not write {}; see {}.'.format(exo_file, out / 'xp2exo.log'))
+    print('Wrote {} with the frames written so far.'.format(exo_file))
+
+
 def main():
     """Run one explicit stage of an unsteady HDM."""
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('mode', choices=('prepare', 'run', 'summary'))
+    parser.add_argument('mode', choices=('prepare', 'run', 'summary', 'exo'))
     parser.add_argument('--run-index', type=int, required=True)
     parser.add_argument('--dt', type=float, default=DEFAULT_DT, help='physical time step (s)')
     parser.add_argument('--max-time', type=float, default=DEFAULT_MAX_TIME, help='physical time (s)')
@@ -220,6 +259,8 @@ def main():
         prepare(args.run_index, args.dt, args.max_time, args.newton, args.dual_cfl)
     elif args.mode == 'run':
         run(args.run_index)
+    elif args.mode == 'exo':
+        exo(args.run_index)
     else:
         summary(args.run_index)
 
