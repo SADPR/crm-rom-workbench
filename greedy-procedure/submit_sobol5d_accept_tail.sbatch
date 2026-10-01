@@ -2,7 +2,7 @@
 # After the last restarts of a batch: accept the listed HDMs whose forces are stationary (if they
 # still miss HDMtol2), rebuild the global POD, evaluate it, then build and evaluate the local POD.
 
-#SBATCH --job-name=crm5d_accept
+#SBATCH --job-name=naca5d_accept
 #SBATCH --partition=normal
 #SBATCH --ntasks=1
 #SBATCH --time=00:15:00

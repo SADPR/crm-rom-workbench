@@ -2,7 +2,7 @@
 # Export the unsteady fields written so far to one Exodus file per HDM. It only reads the
 # running HDMs' result files, so the runs keep going.
 
-#SBATCH --job-name=crm5d_exo
+#SBATCH --job-name=naca5d_exo
 #SBATCH --partition=cfarhat
 #SBATCH --nodes=1
 #SBATCH --ntasks=1

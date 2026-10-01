@@ -2,7 +2,7 @@
 # After a training batch: stage 3 for its unconverged HDMs, then assemble and POD, the test
 # PROMs with the Delaunay start (the POD-128 sweep winner), and the metrics, as one chain.
 
-#SBATCH --job-name=crm5d_tail
+#SBATCH --job-name=naca5d_tail
 #SBATCH --partition=normal
 #SBATCH --ntasks=1
 #SBATCH --time=00:15:00

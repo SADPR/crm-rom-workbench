@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run one PROM of one batch's start-by-form sweep per array index.
 
-#SBATCH --job-name=crm5d_sweep
+#SBATCH --job-name=naca5d_sweep
 #SBATCH --partition=cfarhat
 #SBATCH --nodes=5
 #SBATCH --ntasks=120

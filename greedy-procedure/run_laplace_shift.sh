@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the legacy FEniCS Laplace solver for one deformed CRM mesh.
+# Run the legacy FEniCS Laplace solver for one deformed NACA mesh.
 set -euo pipefail
 
 if [[ $# -ne 3 ]]; then

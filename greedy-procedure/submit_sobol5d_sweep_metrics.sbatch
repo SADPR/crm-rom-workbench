@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Collect the results of one batch's start-by-form sweep.
 
-#SBATCH --job-name=crm5d_sweep_metrics
+#SBATCH --job-name=naca5d_sweep_metrics
 #SBATCH --partition=cfarhat
 #SBATCH --nodes=1
 #SBATCH --ntasks=1

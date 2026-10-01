@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Merge surface fields and compute one batch's PROM errors over the 5D test set.
 
-#SBATCH --job-name=crm5d_metrics
+#SBATCH --job-name=naca5d_metrics
 #SBATCH --partition=cfarhat
 #SBATCH --nodes=1
 #SBATCH --ntasks=1

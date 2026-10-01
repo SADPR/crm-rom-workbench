@@ -97,14 +97,14 @@ def parsePhysicalTags(top_file):
 
 
 def laplaceBoundaryConditions(physical_tags):
-    """Set the CRM Laplace field to one at the fixed boundary and zero at the airfoil."""
+    """Set the NACA Laplace field to one at the fixed boundary and zero at the airfoil."""
     boundary_values = (('InletFixed_2', 1), ('StickMoving_3', 0))
     tags_by_name = {name: index for index, name in enumerate(physical_tags, start=1)}
     missing = [name for name, _ in boundary_values if name not in tags_by_name]
     if missing:
-        raise RuntimeError('Missing CRM boundary groups: {}'.format(', '.join(missing)))
+        raise RuntimeError('Missing NACA boundary groups: {}'.format(', '.join(missing)))
 
-    # Symmetry_1 touches every vertex in the one-layer CRM extrusion. Leaving
+    # Symmetry_1 touches every vertex in the one-layer NACA extrusion. Leaving
     # it natural avoids the previous constant u_star field caused by u_star=1 there.
     facet_tags = [tags_by_name[name] for name, _ in boundary_values]
     uBC = [value for _, value in boundary_values]

@@ -119,7 +119,7 @@ def initialize(settings):
     source_commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
     write_json(master_dir / 'settings.effective.json', vars(settings))
     write_json(manifest_path(), {
-        'name': 'sobol5d-transonic-steady-crm',
+        'name': 'sobol5d-transonic-steady-naca',
         'source_commit': source_commit,
         'lower_bounds': settings.ParamsLowerBound,
         'upper_bounds': settings.ParamsUpperBound,
@@ -176,7 +176,7 @@ def prepare_static_data(settings):
     missing = [path for path in static_files(settings) if not Path(path).is_file()]
     if missing:
         raise RuntimeError('Missing static data: {}.'.format(', '.join(missing)))
-    print('Prepared static CRM data in {}.'.format(data_dir))
+    print('Prepared static NACA data in {}.'.format(data_dir))
 
 
 def record_shift_stats(run_directory):

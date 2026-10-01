@@ -64,7 +64,7 @@ xdmf_files
 # The workflow uses a tracked relative link: pyaeroopt -> ../pyaeroopt.
 !pyaeroopt
 
-# CRM campaign and diagnostic products are generated on Sherlock and are never versioned.
+# NACA campaign and diagnostic products are generated on Sherlock and are never versioned.
 /CleanLaplaceRuns/
 /CleanLaplacePrecompute/
 /CleanLaplaceBaseline/

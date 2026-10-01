@@ -1,7 +1,7 @@
-CRM geometry-specific Laplace shift
+NACA geometry-specific Laplace shift
 ===================================
 
-The legacy FEniCS solver is included as AirfoilPoisson3D-clean.py.  The CRM
+The legacy FEniCS solver is included as AirfoilPoisson3D-clean.py.  The NACA
 workflow uses ShiftType = 'Laplace' and LaplaceShiftEach = True, so each
 deformed airfoil requires its own unit Laplace field.
 
