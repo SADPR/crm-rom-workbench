@@ -4,7 +4,11 @@
 The steady input of the HDM's last stage (input2, or input3 after a restart) is the template,
 so the physics and discretization stay those of the steady HDM. Only these change:
 - the problem type, to Unsteady;
-- the Time block, to implicit BDF2 with a global physical time step and Newton subiterations;
+- the Time block, to implicit BDF2 with one fixed, global physical time step. Each step is
+  solved with Newton iterations under dual time stepping: a local pseudo-time term added to the
+  Newton matrix only, so GMRES converges while the converged step is unchanged (TimeState.C,
+  MatVecProd.C). The term is for the HDM only; a PROM or HPROM must run with it off, since there
+  it would change the LSPG test basis J V;
 - the outputs, which go to HDMrunNNN/unsteady/;
 - the start, which is the steady references/Solution.bin at time zero (no RestartData).
 """
@@ -23,7 +27,10 @@ import sobol5d_projection as projection
 
 DEFAULT_DT = 1.0e-4
 DEFAULT_MAX_TIME = 0.3
-DEFAULT_NEWTON = 5
+# The first runs (jobs 46203007) used 5 plain Newton iterations: GMRES stalled, and the step
+# residual fell by only 2-10 of the required 1000.
+DEFAULT_NEWTON = 30
+DEFAULT_DUAL_CFL = 100.0
 SNAPSHOT_EVERY = 50
 FIELD_EVERY = 100
 SPECTRUM_PADDING = 16
@@ -49,7 +56,7 @@ def last_stage(directory):
     return stages[-1]
 
 
-def unsteady_input(directory, stage, dt, max_time, newton):
+def unsteady_input(directory, stage, dt, max_time, newton, dual_cfl):
     """Return the unsteady input built from the steady input of the given stage."""
     source = directory / 'input{}'.format(stage)
     text = source.read_text()
@@ -64,12 +71,14 @@ def unsteady_input(directory, stage, dt, max_time, newton):
     snapshots = re.findall(r'Prefix = "{}(snapshots\d?)/";'.format(re.escape(old)), text)
     if not linear or not time_block or len(snapshots) != 1:
         raise RuntimeError('Unexpected Time or NonlinearROM block in {}.'.format(source))
+    dual = ('   DualTimeStepping = On;\n   DualTimeCfl = {:g};\n'.format(dual_cfl)) if dual_cfl > 0 else ''
     new_time = ('\nunder Time {{\n   Form = NonDescriptor;\n   Type = Implicit;\n   TypeTimeStep = Global;\n'
                 '   TimeStep = {:g};\n   MaxTime = {:g};\n   MaxIts = {};\n   Eps = 1e-14;\n'
-                '   under Implicit {{\n      Type = ThreePointBackwardDifference;\n'
+                .format(dt, max_time, int(round(max_time / dt)) + 10) + dual
+                + '   under Implicit {{\n      Type = ThreePointBackwardDifference;\n'
                 '      MatrixVectorProduct = FiniteDifference;\n      under Newton {{\n'
                 '         MaxIts = {};\n         FailSafe = AlwaysOn;\n         Eps = 0.001;\n'
-                .format(dt, max_time, int(round(max_time / dt)) + 10, newton)
+                .format(newton)
                 + linear.group(1) + '      }\n   }\n}\n')
     replacements = [
         ('Type = Steady;', 'Type = Unsteady;', 1),
@@ -95,7 +104,8 @@ def unsteady_input(directory, stage, dt, max_time, newton):
     return text
 
 
-def prepare(index, dt=DEFAULT_DT, max_time=DEFAULT_MAX_TIME, newton=DEFAULT_NEWTON):
+def prepare(index, dt=DEFAULT_DT, max_time=DEFAULT_MAX_TIME, newton=DEFAULT_NEWTON,
+            dual_cfl=DEFAULT_DUAL_CFL):
     """Write the unsteady input of one converged or accepted training HDM."""
     settings = campaign.configure_settings()
     point = campaign.read_manifest()['points'][index - 1]
@@ -111,7 +121,7 @@ def prepare(index, dt=DEFAULT_DT, max_time=DEFAULT_MAX_TIME, newton=DEFAULT_NEWT
     target = directory / 'unsteady'
     if target.exists():
         raise RuntimeError('{} exists; refusing to overwrite an unsteady run.'.format(target))
-    text = unsteady_input(directory, stage, dt, max_time, newton)
+    text = unsteady_input(directory, stage, dt, max_time, newton, dual_cfl)
     for name in ('results', 'postpro', 'references', 'snapshots'):
         (target / name).mkdir(parents=True)
     (target / 'input').write_text(text)
@@ -119,6 +129,7 @@ def prepare(index, dt=DEFAULT_DT, max_time=DEFAULT_MAX_TIME, newton=DEFAULT_NEWT
         'index': index, 'point': point, 'steady_state': state, 'steady_residual': residual,
         'start': str(solution.parent / 'Solution.bin'), 'template': 'input{}'.format(stage),
         'time_step': dt, 'max_time': max_time, 'newton_iterations': newton,
+        'dual_time_cfl': dual_cfl if dual_cfl > 0 else None,
         'convective_time': 1.0 / (point[0] * SPEED_OF_SOUND),
     })
     print('Prepared {} from input{} ({} steady state).'.format(target / 'input', stage, state))
@@ -134,6 +145,22 @@ def run(index):
         raise RuntimeError('{} exists; refusing to rerun.'.format(target / 'log'))
     projection.run_aerof(settings, target / 'input', target / 'log')
     print('Completed the unsteady run of HDM {:03d}.'.format(index))
+
+
+def step_convergence(log, tolerance=1.0e-3):
+    """Return the Newton iterations per time step and how far the steps that missed the tolerance fell."""
+    text = log.read_text()
+    newton = [int(value) for value in re.findall(r'^It \d+ \(\d+,(\d+)\):', text, re.M)][1:]
+    missed = [float(reached) / float(initial) for initial, reached in re.findall(
+        r'Newton solver reached \d+ its \(Residual: initial=(\S+), reached=(\S+),', text)]
+    return {
+        'steps': len(newton),
+        'mean_newton_iterations': float(np.mean(newton)) if newton else None,
+        'tolerance': tolerance,
+        'steps_missing_tolerance': len(missed),
+        'worst_reduction': float(max(missed)) if missed else None,
+        'median_missed_reduction': float(np.median(missed)) if missed else None,
+    }
 
 
 def summary(index):
@@ -167,8 +194,12 @@ def summary(index):
             'peak_frequency_hz': float(frequencies[peak]) if peak else None,
             'peak_strouhal': float(frequencies[peak] * meta['convective_time']) if peak else None,
         }
+    # The step must be the imposed one everywhere; the history prints seven significant digits.
+    deviation = float(np.max(np.abs(np.diff(time) - meta['time_step'])) / meta['time_step'])
     result = {'index': index, 'time': float(time[-1]),
-              'convective_times': float(time[-1] / meta['convective_time']), **values}
+              'convective_times': float(time[-1] / meta['convective_time']),
+              'time_step_max_deviation': deviation,
+              'convergence': step_convergence(directory / 'unsteady/log'), **values}
     campaign.write_json(directory / 'unsteady/summary.json', result)
     print(json.dumps(result, indent=1))
 
@@ -182,9 +213,11 @@ def main():
     parser.add_argument('--dt', type=float, default=DEFAULT_DT, help='physical time step (s)')
     parser.add_argument('--max-time', type=float, default=DEFAULT_MAX_TIME, help='physical time (s)')
     parser.add_argument('--newton', type=int, default=DEFAULT_NEWTON, help='Newton iterations per step')
+    parser.add_argument('--dual-cfl', type=float, default=DEFAULT_DUAL_CFL,
+                        help='pseudo-time CFL of dual time stepping; 0 turns it off')
     args = parser.parse_args()
     if args.mode == 'prepare':
-        prepare(args.run_index, args.dt, args.max_time, args.newton)
+        prepare(args.run_index, args.dt, args.max_time, args.newton, args.dual_cfl)
     elif args.mode == 'run':
         run(args.run_index)
     else:

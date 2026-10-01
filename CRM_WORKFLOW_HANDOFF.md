@@ -1093,8 +1093,25 @@ mesh, fluxes, and the linear solver stay those of the steady HDM.
 - `Time`:
   - `Type = Implicit`, `TypeTimeStep = Global`, `TimeStep = 1e-4` s, `MaxTime = 0.3` s.
   - `Implicit Type = ThreePointBackwardDifference` (BDF2).
-  - At most 5 Newton iterations per step, with the steady linear solver.
+  - The time step is fixed and the same at every node: `TimeData::computeCoefficients` sets
+    every nodal dt to the imposed one under `Global`. `summary` checks it on the history
+    (`time_step_max_deviation`).
+  - Each step is solved with up to 30 Newton iterations (tolerance: residual ×1e-3), with
+    `DualTimeStepping = On`, `DualTimeCfl = 100`, and the steady linear solver.
   - The CflLaw block is dropped; an imposed `TimeStep` overrides the CFL (`DistTimeState.C`).
+
+Dual time stepping changes only how each step is solved, not the step's equation or its
+solution:
+
+- It adds a local pseudo-time term 1/dτ (dτ from `DualTimeCfl`) to the diagonal of the Newton
+  matrix (`TimeState.C`) and to the finite-difference Jacobian product (`MatVecProd.C`).
+- The nonlinear residual that Newton drives to zero is still the full BDF2 residual with the fixed
+  dt. A converged step is therefore the same BDF2 solution, and the snapshots satisfy the
+  residual that the PROM minimizes.
+- Rule: dual time stepping is **only for the HDM**. The PROM and HPROM build J V with the same
+  operator (`ImplicitRomTsDesc.C`, `ImplicitHyperRomTsDesc.C`), so there it would change the
+  LSPG test basis and the solution. Keep it off (the default) in every PROM, HPROM, and
+  HPROM-training input.
 - Outputs go to `HDMrunNNN/unsteady/`:
   - lift and drag every step (`ForcesFrequency` defaults to 1);
   - fields every 100 steps;
@@ -1107,15 +1124,21 @@ Time scales. With a∞ ≈ 295 m/s and chord 1 m, one convective time is c/U∞ 
 about 1/45 of a convective time, and 0.3 s is 62-71 convective times. That covers about 4 periods
 of 2D buffet (St ≈ 0.06-0.08) and about 680 steps per period.
 
-Cost and disk. The first runs (jobs 46203007) took 24-31 s per step on 5 nodes, not the ~5 s
-that a steady iteration suggests. The 5 Newton iterations always run to the limit and reduce
-the residual by only about one order (the target is three), and GMRES(200) often stops at 200
-iterations: dt = 1e-4 s is a very large CFL in the boundary-layer cells. So 12 h reach
-0.14-0.18 s (28-43 convective times), not 0.3 s, and each step is only loosely converged in
-time. That is enough to tell a steady state from a departing one, not for accurate periods.
-The sbatch sends SIGUSR1 15 min before the limit, and AERO-F then ends cleanly with its final
-state. For a running job without that flag: `scancel --signal=USR1 JOBID`. Disk is about
-4 GB per case.
+Why dual time stepping. The first runs (jobs 46203007, cancelled and deleted) used 5 plain
+Newton iterations per step and no dual time:
+
+- Every step hit the limit. dt = 1e-4 s is a CFL of about 4e4 in the smallest boundary-layer
+  cells, and there GMRES(200) with RAS stopped at 200 iterations in a third to three quarters
+  of the solves.
+- In 032, the case whose flow moves, the step residual fell only ×2 instead of ×1000, so its
+  snapshots did not satisfy the BDF2 residual.
+- 033 stayed within 0.03 % of its steady forces, and 137 within 0.04 % (0.016 s). 032 had lost
+  3.7 % of its lift by 0.02 s and was still drifting.
+- Those runs cost 24-31 s per step.
+
+The dual-time cost per step is measured in the first steps. The sbatch allows 48 h and sends
+SIGUSR1 15 min before the limit, so AERO-F ends cleanly with its final state. For a running job
+without that flag: `scancel --signal=USR1 JOBID`. Disk is about 4 GB per case.
 
 ```bash
 git pull
@@ -1131,6 +1154,9 @@ python3 -B sobol5d_unsteady.py summary --run-index 32   # also works mid-run, on
 - `late_slope_per_convective_time`: drift;
 - the spectral peak in Hz and as a Strouhal number based on c/U∞. The window is Hann with
   zero padding, and periods longer than the window count as drift.
+
+It also reports `convergence` from the log: the Newton iterations per step, how many steps
+missed the tolerance, and how far they fell.
 
 A steady case shows a small amplitude and slope. A buffeting case shows a sustained amplitude
 at St ≈ 0.05-0.1.
