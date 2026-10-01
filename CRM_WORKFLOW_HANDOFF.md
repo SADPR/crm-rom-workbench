@@ -1073,6 +1073,61 @@ For unsteady ROM design, distinguish carefully between:
 - nonlinear/Newton iterations, which solve the implicit equations within one
   physical time step.
 
+### First unsteady HDM test (steps 3-4 on three training points)
+
+The test asks whether the steady states hold under URANS. `sobol5d_unsteady.py` runs it on three
+training HDMs. Each one starts from the steady `references/Solution.bin` of its **last** stage:
+input2, or input3 after a restart.
+
+| HDM | M | α (deg) | Expectation | Steady stage |
+|---|---|---|---|---|
+| 033 | 0.70 | 0.0 | stays steady (center point) | 2 |
+| 137 | 0.745 | 1.78 | uncertain: residual oscillates, forces stationary (accepted) | 3 |
+| 032 | 0.80 | 2.0 | may become unsteady (shock buffet; all-max corner) | 2 |
+
+`prepare` copies the steady input of that stage and changes only what follows. The physics,
+mesh, fluxes, and the linear solver stay those of the steady HDM.
+
+- `Problem Type = Unsteady`.
+- `RestartData = ""`, so the run starts from the steady solution at t = 0, iteration 0.
+- `Time`:
+  - `Type = Implicit`, `TypeTimeStep = Global`, `TimeStep = 1e-4` s, `MaxTime = 0.3` s.
+  - `Implicit Type = ThreePointBackwardDifference` (BDF2).
+  - At most 5 Newton iterations per step, with the steady linear solver.
+  - The CflLaw block is dropped; an imposed `TimeStep` overrides the CFL (`DistTimeState.C`).
+- Outputs go to `HDMrunNNN/unsteady/`:
+  - lift and drag every step (`ForcesFrequency` defaults to 1);
+  - fields every 100 steps;
+  - Laplace-shifted state snapshots every 50 steps, without residual snapshots.
+
+`prepare` also checks that the HDM is converged or accepted, and that `Solution.bin` was written at
+the end of that stage. It refuses to overwrite an existing `unsteady/` directory.
+
+Time scales. With a∞ ≈ 295 m/s and chord 1 m, one convective time is c/U∞ ≈ 4.2-4.8 ms. So dt is
+about 1/45 of a convective time, and 0.3 s is 62-71 convective times. That covers about 4 periods
+of 2D buffet (St ≈ 0.06-0.08) and about 680 steps per period.
+
+Cost and disk. 3000 steps × at most 5 Newton iterations take about the 15 000 iterations of a
+steady stage, roughly 4-5 h on 5 nodes, and about 4 GB per case.
+
+```bash
+git pull
+sbatch --array=33,137,32%4 submit_sobol5d_unsteady.sbatch
+# per case, at the end: Sobol5DRuns/HDMrunNNN/unsteady/summary.json
+python3 -B sobol5d_unsteady.py summary --run-index 32   # also works mid-run, on the partial history
+```
+
+`summary` compares lift and drag with the steady values over the second half of the run:
+
+- `change_from_steady`;
+- `late_amplitude`: peak-to-peak over the mean;
+- `late_slope_per_convective_time`: drift;
+- the spectral peak in Hz and as a Strouhal number based on c/U∞. The window is Hann with
+  zero padding, and periods longer than the window count as drift.
+
+A steady case shows a small amplitude and slope. A buffeting case shows a sustained amplitude
+at St ≈ 0.05-0.1.
+
 ## 17. Yihong's answers (2026-09-25) and open questions
 
 His answers:
