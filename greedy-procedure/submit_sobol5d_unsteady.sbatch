@@ -7,6 +7,9 @@
 #SBATCH --ntasks=120
 #SBATCH --ntasks-per-node=24
 #SBATCH --time=12:00:00
+# AERO-F ends a run cleanly on SIGUSR1 (Main.C, TsDesc::outputToDisk): it writes the final
+# fields and restart files, so a run cut by the time limit keeps its last state.
+#SBATCH --signal=USR1@900
 #SBATCH --output=Sobol5DRuns/logs/unsteady_%A_%a.out
 #SBATCH --error=Sobol5DRuns/logs/unsteady_%A_%a.err
 
