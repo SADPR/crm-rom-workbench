@@ -6,7 +6,8 @@
 #SBATCH --nodes=5
 #SBATCH --ntasks=120
 #SBATCH --ntasks-per-node=24
-#SBATCH --time=12:00:00
+# Up to 30 dual-time Newton iterations per step: the cost per step is measured in the first steps.
+#SBATCH --time=48:00:00
 # AERO-F ends a run cleanly on SIGUSR1 (Main.C, TsDesc::outputToDisk): it writes the final
 # fields and restart files, so a run cut by the time limit keeps its last state.
 #SBATCH --signal=USR1@900
@@ -18,8 +19,8 @@ set -euo pipefail
 work_dir=${SLURM_SUBMIT_DIR:?Submit this script from greedy-procedure/.}
 repo_dir=$(cd "${work_dir}/.." && pwd)
 cd "${work_dir}"
-# Extra arguments, e.g. --dt 5e-5 --max-time 0.2 --newton 5, go to prepare.
-index=${SLURM_ARRAY_TASK_ID:?Usage: sbatch --array=LIST%4 submit_sobol5d_unsteady.sbatch [--dt S --max-time S --newton N]}
+# Extra arguments, e.g. --dt 5e-5 --max-time 0.2 --newton 30 --dual-cfl 100, go to prepare.
+index=${SLURM_ARRAY_TASK_ID:?Usage: sbatch --array=LIST%4 submit_sobol5d_unsteady.sbatch [--dt S --max-time S --newton N --dual-cfl C]}
 
 [[ "${SLURM_NTASKS}" -eq 120 ]] || {
     echo "Expected 120 MPI tasks, received ${SLURM_NTASKS}." >&2
