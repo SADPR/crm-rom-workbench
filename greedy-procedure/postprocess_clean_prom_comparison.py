@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create ParaView-ready HDM/PROM field comparisons for the clean CRM case."""
+"""Create ParaView-ready HDM/PROM field comparisons for the clean NACA case."""
 
 import argparse
 import json

@@ -1,6 +1,13 @@
-# CRM steady-ROM workflow: history, operating procedure, and current plan
+# NACA 5D ROM workflow: history, operating procedure, and current plan
 
-This document is the operational memory for the CRM workbench. It records what
+**Naming.** The case is a parametric 2D NACA 4-digit airfoil, not the NASA Common Research Model
+(CRM). "crm" survives only where renaming would break things: the repository name
+(`crm-rom-workbench`), the Sherlock paths, the local mount (`Sherlock_CRM`), the `CRM_*`
+environment variables, the `CRM_Laplace` conda environment, the 2026 manifest's `name` field, and the
+file names of this handoff and of `docs/history/`. New names (Slurm jobs, documents, figures,
+presentations) use `naca5d`.
+
+This document is the operational memory for the NACA 5D workbench. It records what
 exists, why particular decisions were made, how a source-code change reaches
 Sherlock, and how to distinguish an exploratory result from a result that may
 be used by the current steady-ROM campaign.
@@ -129,7 +136,7 @@ an otherwise reproducible campaign into an undocumented experiment.
 ```text
 /scratch/users/sadpr/Code3Aug/crm-rom-workbench
     Canonical execution clone. Git-tracked source arrives here from GitHub.
-    All current generated CRM results are written below greedy-procedure/.
+    All current generated campaign results are written below greedy-procedure/.
 
 /scratch/users/sadpr/Code3Aug/crm-rom-workbench/mesh
     Private execution mesh directory. It is intentionally ignored by Git.
@@ -493,7 +500,7 @@ every vertex. The resulting Laplace field was constant rather than
 geometry-specific. A constant shift cannot do the alignment that this method
 needs.
 
-This is a workflow/configuration issue in the exploratory CRM pipeline. It is
+This is a workflow/configuration issue in the exploratory NACA pipeline. It is
 not a statement that another person's CFD solution is physically wrong.
 
 ### Correct named-boundary condition
@@ -1208,7 +1215,7 @@ into batch scripts or repository files.
 
 The AERO-F source was pushed to Bitbucket master through an API token because
 the user signs in with Google and ordinary password authentication did not
-work. That is separate from the public CRM GitHub repository. Do not print or
+work. That is separate from the public workbench GitHub repository. Do not print or
 commit tokens; remote URLs containing a token should be treated as sensitive.
 
 ### Missing Eigen or Boost during an AERO-F build

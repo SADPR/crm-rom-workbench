@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Assemble one 5D training batch and build its ScaLAPACK POD.
 
-#SBATCH --job-name=crm5d_pod
+#SBATCH --job-name=naca5d_pod
 #SBATCH --partition=cfarhat
 #SBATCH --nodes=5
 #SBATCH --ntasks=120

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Prepare and run one 5D HDM per array index, for the training design or the test set.
 
-#SBATCH --job-name=crm5d_hdm
+#SBATCH --job-name=naca5d_hdm
 #SBATCH --partition=cfarhat
 #SBATCH --nodes=5
 #SBATCH --ntasks=120

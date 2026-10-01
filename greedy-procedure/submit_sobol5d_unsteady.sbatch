@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run one unsteady (URANS) HDM per array index, from the steady state of that training HDM.
 
-#SBATCH --job-name=crm5d_unst
+#SBATCH --job-name=naca5d_unst
 #SBATCH --partition=cfarhat
 #SBATCH --nodes=5
 #SBATCH --ntasks=120

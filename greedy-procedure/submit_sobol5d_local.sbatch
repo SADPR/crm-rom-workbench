@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build one batch's clustered POD and initialize its Delaunay PROM sweep over the test set.
 
-#SBATCH --job-name=crm5d_local
+#SBATCH --job-name=naca5d_local
 #SBATCH --partition=cfarhat
 #SBATCH --nodes=5
 #SBATCH --ntasks=120

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run one batch's frozen-POD PROM at one 5D test point per array index.
 
-#SBATCH --job-name=crm5d_prom
+#SBATCH --job-name=naca5d_prom
 #SBATCH --partition=cfarhat
 #SBATCH --nodes=5
 #SBATCH --ntasks=120

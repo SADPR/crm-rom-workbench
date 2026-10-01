@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Start one batch's PROM from the projection of the truth at a few test points.
 
-#SBATCH --job-name=crm5d_proj
+#SBATCH --job-name=naca5d_proj
 #SBATCH --partition=cfarhat
 #SBATCH --nodes=5
 #SBATCH --ntasks=120
