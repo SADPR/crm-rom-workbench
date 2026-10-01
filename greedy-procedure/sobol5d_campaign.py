@@ -474,11 +474,43 @@ def accept(settings, run_index, reason):
         run_index, residual, lift, drag))
 
 
+def geometry_aliases(points):
+    """Map each design point to the earlier point with the same airfoil and flow, if any.
+
+    With zero maximum camber the camber location has no effect, so the box corners that differ
+    only in it are one HDM: aliases carry no new information and do not count toward a batch.
+    """
+    first, aliases = {}, {}
+    for index, (mach, aoa, location, camber, thickness) in enumerate(points, start=1):
+        key = (mach, aoa, None if camber == 0.0 else location, camber, thickness)
+        if key in first:
+            aliases[index] = first[key]
+        else:
+            first[key] = index
+    return aliases
+
+
+def batch_range(points, count):
+    """Return the last design index of a batch of `count` distinct HDMs, and the aliases before it."""
+    aliases = geometry_aliases(points)
+    distinct = 0
+    for index in range(1, len(points) + 1):
+        if index not in aliases:
+            distinct += 1
+            if distinct == count:
+                return index, {alias: original for alias, original in aliases.items() if alias <= index}
+    raise RuntimeError('The design has fewer than {} distinct points; extend it.'.format(count))
+
+
 def audit(settings, count):
-    """Report every design point up to count without changing any directory."""
-    points = read_manifest()['points'][:count]
+    """Report every design point of a batch of `count` distinct HDMs without changing anything."""
+    points = read_manifest()['points']
+    last, aliases = batch_range(points, count)
+    # Aliases need no HDM of their own; assemble gives them their original's state.
     rows = [(index,) + classify(settings, index, point)
-            for index, point in enumerate(points, start=1)]
+            for index, point in enumerate(points[:last], start=1) if index not in aliases]
+    print('Batch {}: design points 1-{}, {} of them aliases ({}).'.format(
+        count, last, len(aliases), ', '.join('{}->{}'.format(a, o) for a, o in sorted(aliases.items()))))
     tally = Counter(row[1] for row in rows)
     print('Audited {} design points: {}.'.format(
         count, ', '.join('{} {}'.format(value, key) for key, value in sorted(tally.items()))
@@ -492,8 +524,12 @@ def audit(settings, count):
 
 def extend_candidates(settings, count):
     """Return the unconverged HDMs up to count that have not had a stage-3 restart yet."""
+    points = read_manifest()['points']
+    last, aliases = batch_range(points, count)
     candidates = []
-    for index, point in enumerate(read_manifest()['points'][:count], start=1):
+    for index, point in enumerate(points[:last], start=1):
+        if index in aliases:
+            continue
         state, _, directory = classify(settings, index, point)
         if state == 'unconverged' and not (directory / 'stage3.json').is_file():
             candidates.append(index)
@@ -508,7 +544,8 @@ def assemble(settings, count):
                if state in ('missing', 'incomplete', 'restart-unrepaired')]
     if pending:
         raise RuntimeError('HDMs still missing or incomplete: {}.'.format(pending))
-    entries = []
+    last, aliases = batch_range(manifest['points'], count)
+    entries = {}
     for index, state, _, directory in rows:
         if state not in ('converged', 'accepted'):
             continue
@@ -519,19 +556,28 @@ def assemble(settings, count):
         restart = latest_restart(target)
         if restart is not None:
             entry['snapshot'], entry['snap_index'] = restart['snapshot'], restart['snap_index']
-        entries.append(entry)
+        entries[index] = entry
+    # The POD sees each distinct state once. The IC catalog also lists every alias with its
+    # original's state, which is exact and keeps the whole box inside the interpolation hull.
+    snapshots = [entry for _, entry in sorted(entries.items())]
+    alias_entries = {alias: dict(entries[original], index=alias, point=manifest['points'][alias - 1])
+                     for alias, original in aliases.items() if original in entries}
+    parameters = [entry for _, entry in sorted({**entries, **alias_entries}.items())]
     state_path, parameter_path = initial_pod.catalog_paths(settings)
-    initial_pod.write_atomically(state_path, initial_pod.snapshot_catalog(settings, entries))
-    initial_pod.write_atomically(parameter_path, initial_pod.parameter_catalog(settings, entries))
+    initial_pod.write_atomically(state_path, initial_pod.snapshot_catalog(settings, snapshots))
+    initial_pod.write_atomically(parameter_path, initial_pod.parameter_catalog(settings, parameters))
     # Unconverged or invalid HDMs stay in the precompute root and are listed, never dropped silently.
     manifest['batches'][str(count)] = {
-        'included': [entry['index'] for entry in entries],
+        'last_index': last,
+        'included': [entry['index'] for entry in snapshots],
+        'aliases': {str(alias): aliases[alias] for alias in sorted(alias_entries)},
         'accepted': {str(index): residual for index, state, residual, _ in rows if state == 'accepted'},
         'excluded': {str(index): state for index, state, _, _ in rows
                      if state not in ('converged', 'accepted')},
     }
     write_json(manifest_path(), manifest)
-    print('Wrote catalogs for batch {} with {} snapshots.'.format(count, len(entries)))
+    print('Wrote catalogs for batch {}: {} distinct snapshots, {} IC entries with aliases.'.format(
+        count, len(snapshots), len(parameters)))
 
 
 def pod_dir(settings, count):
