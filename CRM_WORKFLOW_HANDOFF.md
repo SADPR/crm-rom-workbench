@@ -1107,8 +1107,15 @@ Time scales. With a∞ ≈ 295 m/s and chord 1 m, one convective time is c/U∞ 
 about 1/45 of a convective time, and 0.3 s is 62-71 convective times. That covers about 4 periods
 of 2D buffet (St ≈ 0.06-0.08) and about 680 steps per period.
 
-Cost and disk. 3000 steps × at most 5 Newton iterations take about the 15 000 iterations of a
-steady stage, roughly 4-5 h on 5 nodes, and about 4 GB per case.
+Cost and disk. The first runs (jobs 46203007) took 24-31 s per step on 5 nodes, not the ~5 s
+that a steady iteration suggests. The 5 Newton iterations always run to the limit and reduce
+the residual by only about one order (the target is three), and GMRES(200) often stops at 200
+iterations: dt = 1e-4 s is a very large CFL in the boundary-layer cells. So 12 h reach
+0.14-0.18 s (28-43 convective times), not 0.3 s, and each step is only loosely converged in
+time. That is enough to tell a steady state from a departing one, not for accurate periods.
+The sbatch sends SIGUSR1 15 min before the limit, and AERO-F then ends cleanly with its final
+state. For a running job without that flag: `scancel --signal=USR1 JOBID`. Disk is about
+4 GB per case.
 
 ```bash
 git pull
