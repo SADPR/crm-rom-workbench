@@ -422,8 +422,20 @@ the campaign settings.
 With `include_corners=True`, `sobolGenerator` places all 2^5 = 32 corners
 first, followed by unscrambled Sobol points, so growing N keeps every earlier
 point. With maximum camber 0 the camber location has no geometric effect
-(`deform_naca.py`), so 8 corners duplicate geometry; we accept them to keep
-Yihong's generator unchanged. AERO-F normalizes each parameter to [0, 1]
+(`deform_naca.py`), so 8 corners duplicate geometry. They are explicit
+**aliases**: 5→1, 6→2, 13→9, 14→10, 21→17, 22→18, 29→25, 30→26.
+
+- **Batch size:** a batch of N means N *distinct* HDMs (`batch_range`). Batch
+  128 covers design points 1–136 and batch 256 covers 1–264.
+- **POD:** it takes each distinct state once, so there are no zero singular
+  values.
+- **IC catalog:** it lists every alias with its original's state. That is
+  exact, and it keeps the whole box inside the Delaunay hull.
+- **History:** until 2026-09-30 the batches counted aliases. "128" and "256"
+  were then 120 and 248 distinct HDMs. The PROMs were still correct, because
+  duplicates do not change the POD span, but the sample counts were off by 8.
+
+AERO-F normalizes each parameter to [0, 1]
 before computing IDW distances, so the different parameter scales are safe.
 
 The earlier 3D validation box was Mach [0.4, 0.6], angle [-5, 5] degrees,
