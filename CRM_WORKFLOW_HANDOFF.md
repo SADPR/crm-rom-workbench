@@ -1040,6 +1040,60 @@ With `--basis`, the sweep metrics also report `start_cluster`, `final_cluster`
 and `cluster_switches`. `start_check` is taken against the starting cluster's
 IC products.
 
+#### Why the first local PROM (local4_256) was worse, and the fix
+
+The first run (k-means, 4 clusters of 14, 7, 224 and 70 snapshots) lost 5 of the 32 test points,
+#02, #03, #07, #23 and #31, to negative density or pressure at the shock in the first outer
+iteration. On the other 27 it matched the global POD 256 within 0.5 points at 19 points, was
+better at 2 and worse at 6.
+
+Clustering and the start, as implemented in AERO-F:
+
+- The online cluster is always the nearest centroid in state space (`closestCenterFast`). There
+  is no option to choose it by parameters.
+- The PROM starts in the cluster whose centroid is nearest to the blended start
+  u0 = sum_j w_j u_j, using `ucUicDist[k][i][j] = (u_i - c_k).(u_j - c_k)` (in
+  `ImplicitRomTsDesc::formInitialCondition`).
+- AERO-F then projects u0 onto that cluster's basis: q0 = sum_j w_j V_k^T (u_j - u_ref,k).
+- The cluster is checked again at the start of each outer iteration (5 by default). Within one
+  the up to 30 Gauss-Newton steps keep the same basis. Here only #14 ever switched.
+
+The cause is the start, not Delaunay. Whenever some of the start's training states lie outside
+the starting cluster, the projection cuts them away, and the start is deformed exactly at the
+shock. Examples: #06, Cp start error 19.0% → 49.8%, final 24.7% (global 13.9%); #11, cluster of
+14 modes, 11.0% → 32.6%, final 17.7% (global 7.0%). The same holds for IDW, and IDW-100, which
+mixes about 100 states, would be worse. The global PROM is immune because all modes are kept,
+so every training state lies in its basis.
+
+The fix needs no AERO-F change. The start `delaunay-cluster` (`sobol5d_sweep.py`) works as follows:
+
+1. It reproduces AERO-F's cluster choice from `state.ucUicDist`. This matches the logs at all
+   32 points, crashed ones included.
+2. It computes Delaunay weights over the catalog entries whose state belongs to that cluster
+   (`clusterK/state.snaps`, overlap included; aliases count as their original). Outside the hull
+   of the cluster's parameters, it uses IDW over the 6 nearest entries of the cluster.
+3. It checks that AERO-F still picks that cluster with the restricted weights, trying the other
+   clusters by distance otherwise. `sweep.json` records `cluster_starts`.
+
+On POD 256 with 4 clusters, the weights change at exactly the 9 points whose start mixed
+clusters (the 5 crashes, #06, #10, #11 and #27); the other 23 keep the plain Delaunay start.
+All 32 choices are consistent.
+
+`--inner N` sets the Gauss-Newton iterations per outer iteration. 30 x 5 has the same 150 steps
+as 5 x 30, but checks the cluster 30 times instead of 5. The sweep metrics now also report
+`start_loss`: the Cp of the PROM's iteration 0 against sum_j w_j Cp_j of the training HDMs, that
+is, how much of the start its projection loses. On local4_256 it gives below 0.01% at the 24
+starts inside their cluster, 44.5% at #06, 29.4% at #11 and 1.9% at #27.
+
+The test chain, started after the unsteady runs:
+
+```bash
+./submit_sobol5d_local_fix.sh 46215598
+```
+
+It runs `local4ic_` (fixed start, 5 x 30), `local4ic30x5_` (fixed start, 30 x 5) and
+`global30x5_` (global POD 256, 30 x 5, the control for the split), each 32 PROMs, in sequence.
+
 ## 15. HPROM comes after the 5D global PROM is trusted
 
 The planned HPROM order is:

@@ -23,4 +23,7 @@ module load cmake/3.24.2 gcc/10.1.0 openmpi/4.1.2 imkl/2019
 source /scratch/users/sadpr/Code3Aug/miniconda3/etc/profile.d/conda.sh
 conda activate GreedyAEROF
 
+# Merges a training HDM's wall Cp if its metrics never did.
+export SOWER=/home/groups/cfarhat/bin/sower
+
 python3 -B sobol5d_sweep.py metrics --pod "${count}" --name "${name}"

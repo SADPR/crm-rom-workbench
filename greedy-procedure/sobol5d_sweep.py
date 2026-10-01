@@ -15,6 +15,7 @@ import re
 
 import numpy as np
 import pyaeroopt
+import scipy.interpolate
 
 import sobol5d_campaign as campaign
 import sobol5d_projection as projection
@@ -30,11 +31,18 @@ STARTS = {
     'idw100': 'IDW over the 100 nearest catalog states (the original PROM start)',
     'idw8': 'IDW over the 8 nearest catalog states',
     'delaunay': 'linear interpolation on the Delaunay simplex (LinearNDInterpolator, rescale=True)',
+    'delaunay-cluster': ('Delaunay over the training states of the cluster the PROM starts in, so the '
+                         'start lies in that local basis (IDW over its nearest states outside their hull)'),
     'rbf': 'RBF interpolation, linear kernel with a degree-1 polynomial, unit-cube parameters',
     'projection': 'orthogonal projection of the truth (reference, not a practical start)',
 }
 FORMS = {'nondescriptor': 'NonDescriptor', 'descriptor': 'Descriptor', 'hybrid': 'Hybrid'}
 SWEEP_ITS = 5
+# Starts read from an external weights file (InterpICWeights).
+WEIGHTED_STARTS = ('delaunay', 'rbf', 'delaunay-cluster')
+# Fallback of the cluster start outside the hull of its cluster's parameters: as many
+# neighbors as a 5D simplex has vertices.
+CLUSTER_NEIGHBORS = 6
 # Output fields the sweep metrics do not use; blanking them does not change the solve.
 UNUSED_OUTPUTS = ('Mach = "Mach.bin";', 'Displacement = "Displacement.bin";',
                   'Velocity = "Velocity.bin";', 'FluxResidual = "FluxRes.bin";',
@@ -60,11 +68,12 @@ def weights_path(root, start, index):
 
 
 def initialize(count, name='sweep', points=POINTS, starts=tuple(STARTS), forms=tuple(FORMS),
-               iterations=SWEEP_ITS, basis=None):
-    """Freeze the run list and write the Delaunay and RBF weights of every point.
+               iterations=SWEEP_ITS, basis=None, inner=None):
+    """Freeze the run list and write the external IC weights of every point.
 
     `basis` names a clustered reduction directory next to the global one (sobol5d_local.py);
     its PROMs keep the global IDW catalog, whose IC products that POD also computed.
+    `inner` replaces the Gauss-Newton iterations per outer iteration (30 in runs.py).
     """
     settings = campaign.configure_settings()
     pod = campaign.pod_dir(settings, count)
@@ -80,6 +89,8 @@ def initialize(count, name='sweep', points=POINTS, starts=tuple(STARTS), forms=t
             raise RuntimeError('Missing {}; build the clustered POD first.'.format(record))
         local = {'directory': str(Path(settings.MasterDir) / basis),
                  'clusters': json.loads(record.read_text())['clusters']}
+    if 'delaunay-cluster' in starts and local is None:
+        raise ValueError('The delaunay-cluster start needs a clustered --basis.')
     if 'projection' in starts:
         diagnostic = projection.diagnostic_dir(settings, count)
         if not (diagnostic / 'log.projection').is_file():
@@ -92,13 +103,23 @@ def initialize(count, name='sweep', points=POINTS, starts=tuple(STARTS), forms=t
             raise RuntimeError('Missing {}; run the original PROM first.'.format(source))
     catalog = test.catalog_points(pod)
     root.mkdir(parents=True)
+    cluster_starts = {}
     for start in starts:
-        if start not in ('delaunay', 'rbf'):
+        if start not in WEIGHTED_STARTS:
             continue
         (root / 'weights' / start).mkdir(parents=True)
+        if start == 'delaunay-cluster':
+            directory = Path(local['directory'])
+            runs_of = catalog_runs(pod)
+            members = cluster_members(directory, local['clusters'])
+            distances = read_clustered(directory / 'nonlinearrom/state.ucUicDist')
         for index in points:
-            test.write_weights(weights_path(root, start, index),
-                               test.interpolation_weights(start, catalog, test_points[index - 1]))
+            if start == 'delaunay-cluster':
+                weights, record = cluster_start(catalog, test_points[index - 1], runs_of, members, distances)
+                cluster_starts['{:03d}'.format(index)] = record
+            else:
+                weights = test.interpolation_weights(start, catalog, test_points[index - 1])
+            test.write_weights(weights_path(root, start, index), weights)
     runs = []
     for index in points:
         for start in starts:
@@ -111,17 +132,23 @@ def initialize(count, name='sweep', points=POINTS, starts=tuple(STARTS), forms=t
         'name': name,
         'pod': count,
         'iterations': iterations,
+        'inner': inner,
         'points': list(points),
         'flagged': list(FLAGGED),
         'starts': {start: STARTS[start] for start in starts},
         'forms': {form: FORMS[form] for form in forms},
         'basis': local,
+        'cluster_starts': cluster_starts,
         'runs': runs,
     })
     print('Initialized {} with {} runs.'.format(root, len(runs)))
+    for index, record in cluster_starts.items():
+        print('  point {}: start in cluster {} ({}, consistent: {}; plain Delaunay picks {})'.format(
+            index, record['cluster'], record['method'], record['consistent'],
+            record['plain_delaunay_cluster']))
 
 
-def sweep_input(settings, count, run, root, iterations, basis=None):
+def sweep_input(settings, count, run, root, iterations, basis=None, inner=None):
     """Return the original PROM input of the run's point with the sweep's changes applied."""
     index = run['point']
     pod = campaign.pod_dir(settings, count)
@@ -131,9 +158,11 @@ def sweep_input(settings, count, run, root, iterations, basis=None):
     source = (original / 'input').read_text()
     # Originals may already carry a start and an iteration count (sobol5d_test.py prom --start).
     outer = re.findall(r'   MaxIts = \d+;\n   Eps = 1e-10;', source)
+    newton = re.findall(r'      under Newton \{\n         MaxIts = \d+;', source)
     weights = re.findall(r'InterpICWeights = "[^"]*";', source)
-    if len(outer) != 1 or len(weights) != 1:
-        raise RuntimeError('Cannot find the outer MaxIts and InterpICWeights in {}.'.format(original))
+    if len(outer) != 1 or len(newton) != 1 or len(weights) != 1:
+        raise RuntimeError('Cannot find the outer and Newton MaxIts and InterpICWeights in {}.'.format(
+            original))
     # The truth HDM holds this exact geometry and Laplace shift; the PROM only reads them.
     replacements = [
         ('Position = "{}/deform/Position.bin";'.format(original.as_posix()),
@@ -148,6 +177,8 @@ def sweep_input(settings, count, run, root, iterations, basis=None):
         ('      Frequency = 0;', '      Frequency = {};'.format(iterations), 1),
         ('Form = NonDescriptor;', 'Form = {};'.format(FORMS[run['form']]), 1),
     ]
+    if inner is not None:
+        replacements.append((newton[0], '      under Newton {{\n         MaxIts = {};'.format(inner), 1))
     if basis is not None:
         replacements += [
             ('Prefix = "{}/";'.format(pod.as_posix()), 'Prefix = "{}/";'.format(basis['directory']), 1),
@@ -160,7 +191,7 @@ def sweep_input(settings, count, run, root, iterations, basis=None):
     # Only the Delaunay and RBF starts read external weights; the others must not inherit any.
     # This goes first: an inherited weights path lies in the original directory, which the
     # path replacement rewrites.
-    if run['start'] in ('delaunay', 'rbf'):
+    if run['start'] in WEIGHTED_STARTS:
         replacements.insert(0, (weights[0], 'InterpICWeights = "{}";'.format(
             weights_path(root, run['start'], index).as_posix()), 1))
     elif weights[0] != 'InterpICWeights = "";':
@@ -189,7 +220,7 @@ def run_prom(count, number, name='sweep'):
     if directory.exists():
         raise RuntimeError('{} exists; refusing to overwrite a PROM.'.format(directory))
     text = sweep_input(settings, count, run, sweep_dir(settings, count, name), sweep['iterations'],
-                       sweep.get('basis'))
+                       sweep.get('basis'), sweep.get('inner'))
     original = test.prom_paths(settings, count, run['point'])[0]
     for folder in ('results', 'postpro'):
         (directory / folder).mkdir(parents=True)
@@ -206,20 +237,94 @@ def run_prom(count, number, name='sweep'):
         number, run['start'], run['form'], run['point']))
 
 
-def cluster_products(directory):
-    """Return the precomputed IC coordinates of every cluster, one row per catalog entry.
+def read_clustered(path):
+    """Read one of AERO-F's per-cluster ASCII products as one 2D array per cluster.
 
-    The ASCII file holds Dimension#1 (clusters), then per cluster Dimension#2 (entries), then
-    per entry Dimension#3 (that cluster's basis size) and its values.
+    The file holds Dimension#1 (clusters), then per cluster Dimension#2 (rows), then per row
+    Dimension#3 (its length) and its values.
     """
-    lines = iter(line for line in (directory / 'nonlinearrom/state.basisUicProducts').read_text()
-                 .splitlines() if line.strip() and not line.startswith('MultiVecType'))
+    lines = iter(line for line in path.read_text().splitlines()
+                 if line.strip() and not line.startswith('MultiVecType'))
     size = lambda: int(next(lines).split(':')[1])
     clusters = []
     for _ in range(size()):
-        entries = [[float(next(lines)) for _ in range(size())] for _ in range(size())]
-        clusters.append(np.array(entries))
+        rows = [[float(next(lines)) for _ in range(size())] for _ in range(size())]
+        clusters.append(np.array(rows))
     return clusters
+
+
+def cluster_products(directory):
+    """Return the precomputed IC coordinates of every cluster, one row per catalog entry."""
+    return read_clustered(directory / 'nonlinearrom/state.basisUicProducts')
+
+
+def catalog_runs(pod):
+    """Return the training HDM directory behind every catalog entry; aliases name their original."""
+    lines = (pod / 'parsoldata.txt').read_text().split('\n')
+    count, size = int(lines[0]), int(lines[1])
+    return [re.match(r'(\S*/HDMrun\d{3})/', lines[2 + entry * (size + 1)]).group(1)
+            for entry in range(count)]
+
+
+def cluster_members(local, clusters):
+    """Return the training HDM directories of every cluster's snapshots, overlap included."""
+    return [set(re.findall(r'(\S*/HDMrun\d{3})/', (local / 'nonlinearrom/cluster{}/state.snaps'.format(k))
+                           .read_text()))
+            for k in range(clusters)]
+
+
+def starting_cluster(weights, distances):
+    """Return the cluster AERO-F starts in for these IC weights.
+
+    ImplicitRomTsDesc::formInitialCondition picks the centroid nearest to sum_j w_j u_j, using
+    ucUicDist[k][i][j] = (u_i - c_k).(u_j - c_k), so the squared distance is w' D_k w.
+    """
+    return int(np.argmin([weights @ distance @ weights for distance in distances]))
+
+
+def cluster_weights(catalog, point, inside):
+    """Return Delaunay weights over the catalog entries marked inside, zero elsewhere.
+
+    Outside the hull of those entries, inverse-distance weights over the nearest ones, with the
+    parameters normalized by the whole catalog as AERO-F does.
+    """
+    weights = np.zeros(len(catalog))
+    members = catalog[inside]
+    local = scipy.interpolate.LinearNDInterpolator(members, np.eye(len(members)), rescale=True)(
+        np.asarray(point, dtype=float))[0]
+    method = 'delaunay'
+    if np.isnan(local).any():
+        distance = np.linalg.norm(test.unit_cube(catalog, members) - test.unit_cube(catalog, point),
+                                  axis=1) ** 2
+        keep = np.argsort(distance, kind='stable')[:CLUSTER_NEIGHBORS]
+        local = np.zeros(len(members))
+        local[keep] = 1.0 / distance[keep]
+        local /= local.sum()
+        method = 'idw{}'.format(CLUSTER_NEIGHBORS)
+    weights[inside] = local
+    if abs(weights.sum() - 1.0) > 1e-8:
+        raise RuntimeError('Cluster weights at {} do not sum to one.'.format(point))
+    return weights, method
+
+
+def cluster_start(catalog, point, runs, members, distances):
+    """Return weights whose states all belong to the cluster AERO-F will start the PROM in.
+
+    The cluster AERO-F picks with the plain Delaunay start is tried first, then the others by
+    distance. A cluster is kept when its own restricted start still makes AERO-F pick it.
+    """
+    full = test.interpolation_weights('delaunay', catalog, point)
+    order = np.argsort([full @ distance @ full for distance in distances])
+    for cluster in order:
+        inside = np.array([run in members[cluster] for run in runs])
+        weights, method = cluster_weights(catalog, point, inside)
+        if starting_cluster(weights, distances) == cluster:
+            return weights, {'cluster': int(cluster), 'method': method, 'consistent': True,
+                             'plain_delaunay_cluster': int(order[0])}
+    inside = np.array([run in members[order[0]] for run in runs])
+    weights, method = cluster_weights(catalog, point, inside)
+    return weights, {'cluster': int(order[0]), 'method': method, 'consistent': False,
+                     'plain_delaunay_cluster': int(order[0])}
 
 
 def reduced_history(path):
@@ -232,21 +337,36 @@ def reduced_history(path):
     return history
 
 
-def expected_start(settings, run, root, catalog, products, truth_products, cluster=0):
-    """Return the reduced coordinates the run's iteration 0 must hold in its starting cluster."""
+def start_weights(settings, run, root, catalog):
+    """Return the run's IC weights over the catalog, or None for the projection start."""
     index = run['point']
     if run['start'] == 'projection':
-        return truth_products[index - 1]
-    if run['start'] in ('delaunay', 'rbf'):
+        return None
+    if run['start'] in WEIGHTED_STARTS:
         lines = weights_path(root, run['start'], index).read_text().split()
-        weights = np.array([float(value) for value in lines[1:]])
-    else:
-        neighbors = settings.MaxIntSols if run['start'] == 'idw100' else 8
-        weights = test.idw_weights(catalog, test.read_points()[index - 1], neighbors, settings.DistExp)
+        return np.array([float(value) for value in lines[1:]])
+    neighbors = settings.MaxIntSols if run['start'] == 'idw100' else 8
+    return test.idw_weights(catalog, test.read_points()[index - 1], neighbors, settings.DistExp)
+
+
+def expected_start(settings, run, root, catalog, products, truth_products, cluster=0):
+    """Return the reduced coordinates the run's iteration 0 must hold in its starting cluster."""
+    weights = start_weights(settings, run, root, catalog)
+    if weights is None:
+        return truth_products[run['point'] - 1]
     return weights @ products[cluster]
 
 
-def run_metrics(settings, count, run, root, iterations, wall, catalog, products, truth_products):
+def blended_start(weights, runs, training_cp):
+    """Return sum_j w_j Cp_j over the training wall Cp: the start before any projection."""
+    blend = 0.0
+    for entry in np.nonzero(np.abs(weights) > 1e-14)[0]:
+        blend = blend + weights[entry] * training_cp(runs[entry])
+    return blend
+
+
+def run_metrics(settings, count, run, root, iterations, wall, catalog, products, truth_products, runs,
+                training_cp):
     """Compare one sweep PROM's start and final states with the truth and the original PROM."""
     directory = Path(run['directory'])
     index = run['point']
@@ -271,6 +391,11 @@ def run_metrics(settings, count, run, root, iterations, wall, catalog, products,
     history = reduced_history(directory / 'postpro/ReducedCoords.out')
     clusters = [cluster for cluster, _ in history]
     start = expected_start(settings, run, root, catalog, products, truth_products, clusters[0])
+    weights = start_weights(settings, run, root, catalog)
+    # How much of the blended start its projection onto the starting basis loses. On the first
+    # local sweep, starts within their cluster gave below 0.01%, and the deformed ones 2-45%.
+    start_loss = (test.relative_error(frames[0], blended_start(weights, runs, training_cp), 2)
+                  if weights is not None else None)
     _, _, final_residual = test.prom_residual(directory)
     lift_start, drag_start = projection.force_errors(directory, truth_forces, 0)
     lift_final, drag_final = projection.force_errors(directory, truth_forces, -1)
@@ -286,6 +411,7 @@ def run_metrics(settings, count, run, root, iterations, wall, catalog, products,
         start_cluster=clusters[0], final_cluster=clusters[-1],
         cluster_switches=sum(a != b for a, b in zip(clusters, clusters[1:])),
         cp_start=test.relative_error(frames[0], truth, 2),
+        start_loss=start_loss,
         cp_final=test.relative_error(frames[-1], truth, 2),
         cp_final_vs_original=test.relative_error(frames[-1], test.wall_pressure(original, wall), 2),
         lift_start=lift_start, drag_start=drag_start, lift_final=lift_final, drag_final=drag_final,
@@ -314,8 +440,21 @@ def metrics(count, name='sweep'):
     products = cluster_products(Path(sweep['basis']['directory']) if sweep.get('basis') else pod)
     truth_products = (projection.ic_products(projection.diagnostic_dir(settings, count))
                       if 'projection' in sweep['starts'] else None)
+    frg = pyaeroopt.interface.Frg(
+        top='{}.top'.format(settings.TopFilePath),
+        geom_pre='{}data/{}'.format(settings.MasterDir, settings.GeometryPrefix),
+    )
+    cache = {}
+
+    def training_cp(directory):
+        if directory not in cache:
+            test.merge_surface_fields(frg, Path(directory), fields=('PressureCoefficient',))
+            cache[directory] = test.wall_pressure(Path(directory), wall)
+        return cache[directory]
+
+    catalog_dirs = catalog_runs(pod)
     runs = [run_metrics(settings, count, run, root, sweep['iterations'], wall, catalog, products,
-                        truth_products)
+                        truth_products, catalog_dirs, training_cp)
             for run in sweep['runs']]
     configurations = {}
     for start in sweep['starts']:
@@ -332,27 +471,31 @@ def metrics(count, name='sweep'):
                 'cp_final_good': summarize([run['cp_final'] for run in done if not run['flagged']]),
                 'worst_convergence': max((run['convergence'] for run in done), default=None),
                 'worst_start_check': max((run['start_check'] for run in done), default=None),
+                'start_loss': summarize([run['start_loss'] for run in done
+                                         if run['start_loss'] is not None]),
             }
     campaign.write_json(root / 'metrics.json', {
         'name': sweep.get('name', name),
         'pod': count,
         'iterations': sweep['iterations'],
+        'inner': sweep.get('inner'),
         'unit': 'percent relative L2 error of the z = 0 wall Cp against the truth HDM; '
                 'residuals are in each run\'s own form',
         'configurations': configurations,
         'runs': runs,
     })
-    print('{:26s} {:>5s} {:>8s} {:>8s} {:>8s} {:>8s} {:>7s}'.format(
-        'configuration', 'ok', 'start', 'final', 'flagged', 'good', 'max'))
+    print('{:26s} {:>5s} {:>8s} {:>8s} {:>8s} {:>8s} {:>7s} {:>7s}'.format(
+        'configuration', 'ok', 'start', 'final', 'flagged', 'good', 'max', 'loss'))
     for label, value in configurations.items():
         if value['cp_final'] is None:
             print('{:26s} {:>5d}'.format(label, value['ok']))
             continue
         good = value['cp_final_good']['median'] if value['cp_final_good'] else float('nan')
         flagged = value['cp_final_flagged']['median'] if value['cp_final_flagged'] else float('nan')
-        print('{:26s} {:>5d} {:8.1f} {:8.1f} {:8.1f} {:8.1f} {:7.1f}'.format(
+        loss = value['start_loss']['max'] if value['start_loss'] else float('nan')
+        print('{:26s} {:>5d} {:8.1f} {:8.1f} {:8.1f} {:8.1f} {:7.1f} {:7.1f}'.format(
             label, value['ok'], value['cp_start']['median'], value['cp_final']['median'],
-            flagged, good, value['cp_final']['max']))
+            flagged, good, value['cp_final']['max'], loss))
 
 
 def index_list(text):
@@ -375,6 +518,7 @@ def main():
     parser.add_argument('--starts', default=','.join(STARTS), help='for init, comma-separated')
     parser.add_argument('--forms', default=','.join(FORMS), help='for init, comma-separated')
     parser.add_argument('--its', type=int, default=SWEEP_ITS, help='for init, outer iterations')
+    parser.add_argument('--inner', type=int, help='for init, Gauss-Newton iterations per outer one')
     parser.add_argument('--basis', help='for init, a clustered reduction directory, e.g. reductionrun256-c4')
     args = parser.parse_args()
 
@@ -384,7 +528,7 @@ def main():
             value for value in forms if value not in FORMS]
         if unknown or not all(1 <= index <= test.TEST_COUNT for index in args.points):
             raise ValueError('Unknown start, form, or test index: {}.'.format(unknown or args.points))
-        initialize(args.pod, args.name, args.points, starts, forms, args.its, args.basis)
+        initialize(args.pod, args.name, args.points, starts, forms, args.its, args.basis, args.inner)
     elif args.mode == 'prom':
         if args.run is None:
             raise ValueError('--run is required for prom.')
