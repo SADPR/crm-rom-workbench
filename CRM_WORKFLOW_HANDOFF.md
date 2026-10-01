@@ -1158,6 +1158,17 @@ python3 -B sobol5d_unsteady.py summary --run-index 32   # also works mid-run, on
 It also reports `convergence` from the log: the Newton iterations per step, how many steps
 missed the tolerance, and how far they fell.
 
+To look at the fields while the runs go on, export the frames written so far (every 100 steps)
+to `HDMrunNNN/unsteady/exo/unsteady_NNN.exo`:
+
+```bash
+sbatch submit_sobol5d_unsteady_exo.sbatch 33 137 32
+```
+
+The export only reads the result files. It uses each HDM's deformed `.top`, so the airfoil is
+the real one, and it refuses to merge within 2 min of a field write so that no frame is read
+half written. Rerun it later to include the new frames; it replaces the earlier export.
+
 A steady case shows a small amplitude and slope. A buffeting case shows a sustained amplitude
 at St ≈ 0.05-0.1.
 
