@@ -25,6 +25,7 @@ import pyaeroopt
 
 import sobol5d_campaign as campaign
 import sobol5d_projection as projection
+import sobol5d_test as test
 
 
 DEFAULT_DT = 1.0e-4
@@ -43,6 +44,10 @@ EXO_FIELDS = ('Mach', 'PressureCoefficient', 'SkinFriction', 'Velocity')
 # AERO-F appends a field frame every FIELD_EVERY steps (about 100 min) in a few seconds; merge
 # only when the last write is older than this, so no frame is read half written.
 WRITE_QUIET = 120.0
+# Steady restart from the final unsteady state: enough iterations to see whether the steady
+# solver keeps that state or drifts away; the tolerance is never met on purpose.
+RESTEADY_ITS = 5000
+GAMMA = 1.4
 
 
 def hdm_directory(settings, index):
@@ -243,11 +248,119 @@ def exo(index):
     print('Wrote {} with the frames written so far.'.format(exo_file))
 
 
+def resteady_input(directory, stage, max_its):
+    """Return the steady input of the given stage restarted from the final unsteady state."""
+    source = directory / 'input{}'.format(stage)
+    text = source.read_text()
+    ran_in = re.findall(r'Prefix = "([^"]*/HDMrun\d{3}/)references/";', text)
+    snapshots = re.findall(r'Prefix = "[^"]*/HDMrun\d{3}/(snapshots\d?)/";', text)
+    criteria = re.findall(r'\nunder Time \{\n   Form = NonDescriptor;\n   MaxIts = \d+;\n   Eps = [^;]+;', text)
+    if len(ran_in) != 1 or len(snapshots) != 1 or len(criteria) != 1:
+        raise RuntimeError('Unexpected restart, snapshot or Time block in {}.'.format(source))
+    old, here = ran_in[0], '{}/'.format(directory.as_posix())
+    out = '{}resteady/'.format(here)
+    replacements = [
+        # A fresh run (iteration 0, CFL law from Cfl0) whose state is the final unsteady one.
+        ('RestartData = "{}references/Restart.data";'.format(old), 'RestartData = "";', 1),
+        ('Solution = "{}references/Solution.bin";'.format(old),
+         'Solution = "{}unsteady/references/Solution.bin";'.format(here), 1),
+        ('Prefix = "{}results/";'.format(old), 'Prefix = "{}results/";'.format(out), 1),
+        ('Prefix = "{}references/";'.format(old), 'Prefix = "{}references/";'.format(out), 1),
+        ('Prefix = "{}{}/";'.format(old, snapshots[0]), 'Prefix = "{}snapshots/";'.format(out), 1),
+        (old, here, None),
+        (criteria[0], '\nunder Time {{\n   Form = NonDescriptor;\n   MaxIts = {};\n   Eps = 1e-14;'.format(max_its), 1),
+        ('OutputResidualSnapshotData = True;', 'OutputResidualSnapshotData = False;', 1),
+    ]
+    replacements += [(line, '{} = "";'.format(line.split(' = ')[0]), 1) for line in UNUSED_OUTPUTS]
+    text = projection.patch(text, replacements, source)
+    if 'references/Restart.data' in text or 'Type = Unsteady;' in text:
+        raise RuntimeError('The steady restart input from {} still restarts the old run.'.format(source))
+    return text
+
+
+def cp_star(mach):
+    """Critical pressure coefficient: Cp at which the local flow becomes sonic."""
+    ratio = (2.0 + (GAMMA - 1.0) * mach ** 2) / (GAMMA + 1.0)
+    return 2.0 / (GAMMA * mach ** 2) * (ratio ** (GAMMA / (GAMMA - 1.0)) - 1.0)
+
+
+def upper_shock(settings, directory, cp_file, mach):
+    """Return x/c of the steepest Cp rise behind a supersonic region on the upper wall, or None."""
+    raw_nodes = np.loadtxt('{}_nodes'.format(settings.TopFilePath), dtype=np.float64)
+    wall = test.wall_nodes('{}.top'.format(settings.TopFilePath), raw_nodes)
+    with open(directory / 'deform/Position.xpost', 'rb') as handle:
+        handle.readline()
+        count = int(handle.readline())
+        handle.readline()
+        position = np.array(handle.read().split(), dtype=float).reshape(count, 3)
+    cp = np.loadtxt(cp_file, skiprows=3)
+    upper = wall[raw_nodes[wall, 2] >= 0]
+    x = position[upper, 0]
+    x = (x - position[wall, 0].min()) / (position[wall, 0].max() - position[wall, 0].min())
+    order = np.argsort(x)
+    x, cp = x[order], cp[upper][order]
+    keep = (x > 0.1) & (x < 0.95)
+    x, cp = x[keep], cp[keep]
+    if cp.min() >= cp_star(mach):
+        return None
+    gradient = np.gradient(cp, x)
+    gradient[~np.maximum.accumulate(cp < cp_star(mach))] = 0.0
+    return float(x[int(np.argmax(gradient))])
+
+
+def resteady(index, max_its=RESTEADY_ITS):
+    """Restart the steady solver from the final unsteady state and report where it goes."""
+    settings = campaign.configure_settings()
+    directory = hdm_directory(settings, index)
+    unsteady = directory / 'unsteady'
+    solution, log = unsteady / 'references/Solution.bin001', unsteady / 'log'
+    # AERO-F writes the final state when the run ends, at MaxTime or on SIGUSR1.
+    if not solution.is_file() or solution.stat().st_mtime < log.stat().st_mtime - 600:
+        raise RuntimeError('{} holds no final unsteady state yet.'.format(solution))
+    target = directory / 'resteady'
+    if target.exists():
+        raise RuntimeError('{} exists; refusing to overwrite a steady restart.'.format(target))
+    stage = last_stage(directory)
+    text = resteady_input(directory, stage, max_its)
+    for name in ('results', 'postpro', 'references', 'snapshots'):
+        (target / name).mkdir(parents=True)
+    (target / 'input').write_text(text)
+    projection.run_aerof(settings, target / 'input', target / 'log')
+    frg = pyaeroopt.interface.Frg(top='{}.top'.format(settings.TopFilePath),
+                                  geom_pre='{}data/{}'.format(settings.MasterDir, settings.GeometryPrefix))
+    test.merge_surface_fields(frg, target, fields=('PressureCoefficient',))
+    test.merge_surface_fields(frg, directory, fields=('PressureCoefficient',))
+    initial = float(re.search(r'Spatial residual norm = (\S+)', (target / 'log').read_text()).group(1))
+    original = float(re.search(r'Spatial residual norm = (\S+)', (directory / 'log1').read_text()).group(1))
+    rows = projection.table(target / 'postpro/Residual.out')
+    steady_forces = projection.table(directory / 'postpro/liftdrag.out')[-1]
+    unsteady_forces = projection.table(unsteady / 'postpro/liftdrag.out')[-1]
+    forces = projection.table(target / 'postpro/liftdrag.out')
+    point = campaign.read_manifest()['points'][index - 1]
+    change = lambda value, reference: float((value - reference) / abs(reference))
+    result = {
+        'index': index,
+        'template': 'input{}'.format(stage),
+        'iterations': int(rows[-1, 0]),
+        'steady_final_absolute_residual': float(original * projection.table(directory / 'postpro/Residual.out')[-1, 2]),
+        'start_absolute_residual': initial,
+        'final_absolute_residual': float(initial * rows[-1, 2]),
+        'lift_vs_steady': {'start': change(forces[0, 5], steady_forces[5]), 'final': change(forces[-1, 5], steady_forces[5]),
+                           'unsteady_final': change(unsteady_forces[5], steady_forces[5])},
+        'drag_vs_steady': {'start': change(forces[0, 4], steady_forces[4]), 'final': change(forces[-1, 4], steady_forces[4]),
+                           'unsteady_final': change(unsteady_forces[4], steady_forces[4])},
+        'upper_shock_xc': {'steady': upper_shock(settings, directory, directory / 'postpro/PressureCoefficient.xpost', point[0]),
+                           'restart_final': upper_shock(settings, directory, target / 'postpro/PressureCoefficient.xpost', point[0])},
+    }
+    campaign.write_json(target / 'summary.json', result)
+    print(json.dumps(result, indent=1))
+
+
 def main():
     """Run one explicit stage of an unsteady HDM."""
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('mode', choices=('prepare', 'run', 'summary', 'exo'))
+    parser.add_argument('mode', choices=('prepare', 'run', 'summary', 'exo', 'resteady'))
     parser.add_argument('--run-index', type=int, required=True)
     parser.add_argument('--dt', type=float, default=DEFAULT_DT, help='physical time step (s)')
     parser.add_argument('--max-time', type=float, default=DEFAULT_MAX_TIME, help='physical time (s)')
@@ -261,6 +374,8 @@ def main():
         run(args.run_index)
     elif args.mode == 'exo':
         exo(args.run_index)
+    elif args.mode == 'resteady':
+        resteady(args.run_index)
     else:
         summary(args.run_index)
 
