@@ -1219,6 +1219,26 @@ python3 -B sobol5d_unsteady.py summary --run-index 32   # also works mid-run, on
 It also reports `convergence` from the log: the Newton iterations per step, how many steps
 missed the tolerance, and how far they fell.
 
+First result of 032 (M 0.80, alpha 2). The steady state does not hold, but it is not buffet
+either. Within 0.02 s the upper shock moves forward from x/c = 0.492 to 0.468 and then stays
+there through t = 0.13 s. Lift settles at -4.1% and drag at -2.1% of the steady values after a
+small damped overshoot. Two explanations remain open:
+
+1. The discrete steady equations have two solutions, and the steady solver found the less stable
+   one.
+2. The steady HDM met its 5e-7 relative tolerance before the slow shock-position mode had
+   converged.
+
+`resteady` tells them apart. It restarts the stage-2 steady input (fresh iteration count, CFL law
+from Cfl0) from the final unsteady state for 5000 iterations, without a reachable tolerance. It
+writes `HDMrunNNN/resteady/summary.json`, which holds the absolute residual at the start of the
+restart against the steady HDM's final one, lift, drag, and the upper-shock x/c of the steady
+HDM and of the restart.
+
+```bash
+sbatch --dependency=afterany:<last PROM array> --array=32 submit_sobol5d_resteady.sbatch
+```
+
 To look at the fields while the runs go on, export the frames written so far (every 100 steps)
 to `HDMrunNNN/unsteady/exo/unsteady_NNN.exo`:
 
