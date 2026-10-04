@@ -15,8 +15,13 @@ set -euo pipefail
 
 work_dir=${SLURM_SUBMIT_DIR:?Submit this script from greedy-procedure/.}
 cd "${work_dir}"
+name=unsteady
+if [[ "${1:-}" == --name ]]; then
+    name=${2:?--name needs a run folder}
+    shift 2
+fi
 (( $# > 0 )) || {
-    echo 'Usage: sbatch submit_sobol5d_unsteady_exo.sbatch HDM...' >&2
+    echo 'Usage: sbatch submit_sobol5d_unsteady_exo.sbatch [--name unsteady...] HDM...' >&2
     exit 2
 }
 
@@ -32,7 +37,7 @@ export XP2EXO=/home/groups/cfarhat/bin/xp2exo
 status=0
 for index in "$@"; do
     # One failed export must not hide the others.
-    python3 -B sobol5d_unsteady.py exo --run-index "${index}" || {
+    python3 -B sobol5d_unsteady.py exo --run-index "${index}" --name "${name}" || {
         echo "HDM ${index}: export failed." >&2
         status=1
     }

@@ -1266,6 +1266,22 @@ HDM and of the restart.
 sbatch --dependency=afterany:<last PROM array> --array=32 submit_sobol5d_resteady.sbatch
 ```
 
+First `resteady` result (iteration 2328 of 5000). The final unsteady state has a steady
+residual of 8.9e4, against 17 at the end of the steady HDM, and the steady solver is moving the
+lift back toward the steady value (-4.14% to -3.07%). So the steady HDM was not stopped early.
+What remains is whether the unsteady run moved the shock correctly. Its trajectory does not
+depend on how well each step converges: the 5-Newton run (x2 per step) and the dual-time run
+(x600 per step) give the same lift at t = 0.026 s. The dt study checks the time step. It reruns
+032 to t = 0.03 s, by when the shock has finished moving, with dt = 2e-4 and 5e-5, each in its
+own folder. Fields are written every 0.01 s and snapshots every 0.005 s whatever the dt, so the
+three runs can be compared at the same instants:
+
+```bash
+sbatch --array=32 submit_sobol5d_unsteady.sbatch --dt 2e-4 --max-time 0.03 --name unsteady-dt2e-4
+sbatch --array=32 submit_sobol5d_unsteady.sbatch --dt 5e-5 --max-time 0.03 --name unsteady-dt5e-5
+sbatch submit_sobol5d_unsteady_exo.sbatch --name unsteady-dt5e-5 32   # fields, when needed
+```
+
 To look at the fields while the runs go on, export the frames written so far (every 100 steps)
 to `HDMrunNNN/unsteady/exo/unsteady_NNN.exo`:
 
