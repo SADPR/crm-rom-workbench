@@ -1094,6 +1094,33 @@ The test chain, started after the unsteady runs:
 It runs `local4ic_` (fixed start, 5 x 30), `local4ic30x5_` (fixed start, 30 x 5) and
 `global30x5_` (global POD 256, 30 x 5, the control for the split), each 32 PROMs, in sequence.
 
+### Final PROM configuration (2026-10-03)
+
+| Choice | Value | Evidence |
+|---|---|---|
+| Basis | global POD, all modes (POD 256: n = 256) | local k-means bases match it at best (below) |
+| Start | Delaunay weights (`InterpICWeights`) | start-by-form sweep: median 11.7% vs 20.2% for IDW-100 |
+| Residual form | NonDescriptor | best for every start in the sweep |
+| Iterations | 30 outer x up to 5 Gauss-Newton | vs 5 x 30 on POD 256: 28 equal, 4 better (#03, #10, #11, #26), 0 worse; same cost |
+
+These are the defaults of `sobol5d_test.py prom` (`PROM_START`, `PROM_OUTER`, `PROM_INNER`), so
+`submit_sobol5d_prom.sbatch COUNT` needs no options. POD 256 with this configuration gives a wall
+Cp error of mean 6.77%, median 3.50% and max 31.2%, with 32/32 converged (`global30x5_256`).
+
+Local PROM on POD 256 (4 k-means clusters, corrected start), against the global POD 256 run with
+5 x 30:
+
+| | mean | median | max | converged |
+|---|---|---|---|---|
+| local, 5 x 30 | 7.30 | 3.56 | 30.2 | 32/32 |
+| local, 30 x 5 | 6.82* | 3.56* | 27.0* | 31/32 (#03, in the 14-mode cluster, fails) |
+
+\* over the 31 that converge.
+
+The local PROM almost never switches cluster (2 switches in 32 runs, with either split), so more
+switch checks do not help. Its bases are subsets of the full-rank global basis, so more clusters
+can only trade accuracy for speed, and that is worth measuring only with hyper-reduction.
+
 ## 15. HPROM comes after the 5D global PROM is trusted
 
 The planned HPROM order is:

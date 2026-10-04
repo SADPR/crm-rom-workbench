@@ -14,7 +14,7 @@ set -euo pipefail
 
 work_dir=${SLURM_SUBMIT_DIR:?Submit this script from greedy-procedure/.}
 cd "${work_dir}"
-count=${1:?Usage: sbatch --array=1-32%3 submit_sobol5d_prom.sbatch COUNT [--start delaunay] [--its N]}
+count=${1:?Usage: sbatch --array=1-32%3 submit_sobol5d_prom.sbatch COUNT [--start idw|delaunay] [--its N] [--inner N]}
 shift
 index=${SLURM_ARRAY_TASK_ID:?Submit this script as an array, even for one index.}
 

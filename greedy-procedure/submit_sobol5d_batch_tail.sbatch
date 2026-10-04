@@ -30,7 +30,7 @@ fi
 # The POD job assembles the batch; HDMs that stay unconverged are excluded and listed.
 pod=$(sbatch --parsable ${dependency} submit_sobol5d_pod.sbatch "${count}")
 prom=$(sbatch --parsable --dependency=afterok:${pod} --array=1-32%3 submit_sobol5d_prom.sbatch \
-    "${count}" --start delaunay --its 5)
+    "${count}")
 # afterok on the POD too: without it, a failed POD still runs metrics on no PROMs.
 metrics=$(sbatch --parsable --dependency=afterok:${pod},afterany:${prom} --time=08:00:00 submit_sobol5d_metrics.sbatch \
     "${count}")

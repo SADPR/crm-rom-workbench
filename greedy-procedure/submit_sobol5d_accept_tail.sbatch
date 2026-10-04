@@ -31,7 +31,7 @@ python3 -B sobol5d_campaign.py audit --count "${count}"
 # The global chain first, then the local one, so no more than three 5-node jobs run at once.
 pod=$(sbatch --parsable submit_sobol5d_pod.sbatch "${count}")
 prom=$(sbatch --parsable --dependency=afterok:${pod} --array=1-32%3 submit_sobol5d_prom.sbatch \
-    "${count}" --start delaunay --its 5)
+    "${count}")
 metrics=$(sbatch --parsable --dependency=afterok:${pod},afterany:${prom} --time=08:00:00 \
     submit_sobol5d_metrics.sbatch "${count}")
 local=$(sbatch --parsable --dependency=afterok:${pod},afterany:${prom} submit_sobol5d_local.sbatch \

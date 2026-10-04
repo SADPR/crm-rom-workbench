@@ -3,6 +3,7 @@
 
 import argparse
 import json
+import re
 import os
 from pathlib import Path
 import shutil
@@ -25,6 +26,12 @@ TEST_DIR = 'Sobol5DTest/'
 TEST_COUNT = 32
 TEST_SEED = 20260925
 METRICS = ('cp_l2', 'cp_l1', 'sf_l2', 'sf_l1', 'drag', 'lift')
+# Final PROM configuration (2026-10-03; handoff, "Final PROM configuration"): the global POD,
+# the Delaunay start, NonDescriptor, and 30 outer iterations of up to 5 Gauss-Newton steps each.
+# On POD 256 it beats 5 x 30 at 4 of 32 test points and loses at none, for the same cost.
+PROM_START = 'delaunay'
+PROM_OUTER = 30
+PROM_INNER = 5
 
 
 def test_settings():
@@ -145,11 +152,11 @@ def run_hdm(index):
     print('Validated {} with final residual {:.6e}.'.format(hdm_dir(index), residual))
 
 
-def run_prom(count, index, start='idw', iterations=None):
+def run_prom(count, index, start=PROM_START, iterations=PROM_OUTER, inner=PROM_INNER):
     """Run the frozen-POD PROM of one batch at one converged test point.
 
-    `start` is AERO-F's IDW guess ('idw') or Delaunay weights ('delaunay', the POD-128 sweep
-    winner); `iterations` replaces the outer MaxIts of runs.py.
+    `start` is AERO-F's IDW guess ('idw') or Delaunay weights ('delaunay'); `iterations` and
+    `inner` replace the outer MaxIts and the Gauss-Newton MaxIts of runs.py (30 and 30).
     """
     settings = campaign.configure_settings()
     pod = campaign.pod_dir(settings, count)
@@ -187,6 +194,11 @@ def run_prom(count, index, start='idw', iterations=None):
     if iterations is not None:
         replacements.append(('   MaxIts = {};\n   Eps = 1e-10;'.format(settings.MaxItsHROM),
                              '   MaxIts = {};\n   Eps = 1e-10;'.format(iterations)))
+    if inner is not None:
+        newton = re.findall(r'      under Newton \{\n         MaxIts = \d+;', text)
+        if len(newton) != 1:
+            raise RuntimeError('Cannot find the Gauss-Newton MaxIts once in {}.'.format(input_file))
+        replacements.append((newton[0], '      under Newton {{\n         MaxIts = {};'.format(inner)))
     if start == 'delaunay':
         weights = rom_dir / 'icweights.txt'
         write_weights(weights, interpolation_weights('delaunay', catalog_points(pod),
@@ -205,6 +217,7 @@ def run_prom(count, index, start='idw', iterations=None):
         'geometry_and_laplace_from': str(hdm),
         'start': start,
         'iterations': settings.MaxItsHROM if iterations is None else iterations,
+        'inner': settings.MaxNewtItsROM if inner is None else inner,
     })
 
     hpc = pyaeroopt.interface.Hpc(machine='independence', batch=False, bg=False,
@@ -417,9 +430,11 @@ def main():
                                          'metrics', 'summary'))
     parser.add_argument('--test-index', type=int)
     parser.add_argument('--pod', type=int)
-    parser.add_argument('--start', choices=('idw', 'delaunay'), default='idw',
-                        help='PROM start; the default keeps the original IDW guess')
-    parser.add_argument('--its', type=int, help='outer PROM iterations (runs.py uses 30)')
+    parser.add_argument('--start', choices=('idw', 'delaunay'), default=PROM_START,
+                        help='PROM start (default: the final configuration)')
+    parser.add_argument('--its', type=int, default=PROM_OUTER, help='outer PROM iterations')
+    parser.add_argument('--inner', type=int, default=PROM_INNER,
+                        help='Gauss-Newton iterations per outer iteration')
     args = parser.parse_args()
 
     if args.mode == 'init':
@@ -440,7 +455,7 @@ def main():
     elif args.mode == 'extend-hdm':
         campaign.extend(test_settings(), args.test_index)
     elif args.mode == 'prom':
-        run_prom(args.pod, args.test_index, start=args.start, iterations=args.its)
+        run_prom(args.pod, args.test_index, start=args.start, iterations=args.its, inner=args.inner)
     else:
         metrics(args.pod)
 
