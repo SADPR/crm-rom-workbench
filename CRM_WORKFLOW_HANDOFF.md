@@ -1028,7 +1028,9 @@ outer iteration, using the PreprocessForProjections products. `NumClusters` in
 the PROM must be the actual count.
 
 `submit_sobol5d_local.sbatch COUNT K [P]` builds the POD and initializes the
-sweep `localK_` over the 32 test points (Delaunay, NonDescriptor, 5 iterations):
+sweep over the 32 test points (Delaunay, NonDescriptor, 5 iterations). The first run named
+it `localK_`. Since 2026-10-04 it is `localKic_` and uses the cluster-restricted start
+(`delaunay-cluster`, below). The commands as first run:
 
 ```bash
 local=$(sbatch --parsable submit_sobol5d_local.sbatch 256 4 20)
