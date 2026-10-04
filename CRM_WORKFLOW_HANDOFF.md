@@ -1123,6 +1123,40 @@ The local PROM almost never switches cluster (2 switches in 32 runs, with either
 switch checks do not help. Its bases are subsets of the full-rank global basis, so more clusters
 can only trade accuracy for speed, and that is worth measuring only with hyper-reduction.
 
+#### k = 8 local PROM and MinClusterSize (2026-10-04)
+
+With k = 8 (corrected start, 5 x 30) the clusters hold 34, 20, 52, 85, 12, 3, 7 and 163 snapshots
+(1, 5 and 8 of their own in the three smallest). The run converges at 31/32; #06 fails in the
+34-mode cluster. On those 31 points, against the final global configuration (30 x 5):
+
+- mean 6.28% vs 6.55%, median 2.83% vs 3.47%, max 24.7% vs 31.2%;
+- per point, 18 equal, 8 better and 5 worse;
+- large gains at #27 (19.5 → 11.3), #10 (25.0 → 18.2) and #31 (31.2 → 24.7);
+- the worst loss is #23 (5.4 → 15.1, in the 20-mode cluster);
+- mean PROM time about 7 min against 22, from 81 s with 12 modes to 658 s with 163.
+
+AERO-F's overlap is not a share of each cluster's own size. A cluster receives, from each
+neighbor (a cluster that is second closest for some snapshot), the 20% of that neighbor's
+snapshots nearest to it, and there is no floor. The three smallest clusters hold only M = 0.80,
+|alpha| = 2 corners with the strongest shocks (cluster 5: HDM 018; cluster 6: HDMs 027, 028,
+031, 032 and 181).
+
+`MinClusterSize N` (`sobol5d_local.py --min-size`, 4th argument of `submit_sobol5d_local.sbatch`)
+merges, after k-means, every cluster with fewer than N own snapshots into its nearest one. Two
+values are tested:
+
+- N = d + 1 = 6, the fewest states that let the cluster start be a 5D Delaunay interpolation;
+- N = 10, which removes exactly the three corner-only clusters. This criterion uses training data
+  only.
+
+```bash
+for m in 6 10; do
+    local=$(sbatch --parsable submit_sobol5d_local.sbatch 256 8 20 ${m})
+    sweep=$(sbatch --parsable --dependency=afterok:${local} --array=1-32%2 submit_sobol5d_sweep.sbatch 256 local8m${m}ic_)
+    sbatch --dependency=afterany:${sweep} submit_sobol5d_sweep_metrics.sbatch 256 local8m${m}ic_
+done
+```
+
 ## 15. HPROM comes after the 5D global PROM is trusted
 
 The planned HPROM order is:

@@ -14,10 +14,22 @@ set -euo pipefail
 
 work_dir=${SLURM_SUBMIT_DIR:?Submit this script from greedy-procedure/.}
 cd "${work_dir}"
-count=${1:?Usage: sbatch submit_sobol5d_local.sbatch COUNT CLUSTERS [OVERLAP]}
-clusters=${2:?Usage: sbatch submit_sobol5d_local.sbatch COUNT CLUSTERS [OVERLAP]}
+usage='Usage: sbatch submit_sobol5d_local.sbatch COUNT CLUSTERS [OVERLAP] [MIN_CLUSTER_SIZE]'
+count=${1:?${usage}}
+clusters=${2:?${usage}}
 # HGV2 uses a 20 percent overlap between neighboring clusters.
 overlap=${3:-20}
+# Optional MinClusterSize: clusters with fewer own snapshots merge into their nearest one.
+min_size=${4:-}
+if [[ -n "${min_size}" ]]; then
+    tag="m${min_size}"
+    size_option=(--min-size "${min_size}")
+    basis="reductionrun${count}-c${clusters}-m${min_size}"
+else
+    tag=""
+    size_option=()
+    basis="reductionrun${count}-c${clusters}"
+fi
 
 [[ "${SLURM_NTASKS}" -eq 120 ]] || {
     echo "Expected 120 MPI tasks, received ${SLURM_NTASKS}." >&2
@@ -43,8 +55,9 @@ export MKL_NUM_THREADS=1
     exit 1
 }
 
-python3 -B sobol5d_local.py pod --count "${count}" --clusters "${clusters}" --overlap "${overlap}"
+python3 -B sobol5d_local.py pod --count "${count}" --clusters "${clusters}" --overlap "${overlap}" \
+    ${size_option[@]+"${size_option[@]}"}
 # Every test point with the start restricted to the PROM's starting cluster, so the start lies in
 # its local basis (a plain Delaunay start mixes clusters; see the handoff), NonDescriptor, 5 x 30.
-python3 -B sobol5d_sweep.py init --pod "${count}" --name "local${clusters}ic_" --points 1-32 \
-    --starts delaunay-cluster --forms nondescriptor --basis "reductionrun${count}-c${clusters}"
+python3 -B sobol5d_sweep.py init --pod "${count}" --name "local${clusters}${tag}ic_" --points 1-32 \
+    --starts delaunay-cluster --forms nondescriptor --basis "${basis}"
