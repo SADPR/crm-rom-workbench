@@ -1157,6 +1157,15 @@ for m in 6 10; do
 done
 ```
 
+The first m6 and m10 runs (jobs 46510075 and 46510094) aborted in AERO-F's
+`addClusterOverlap`. After a merge, a snapshot of the merged cluster can lie closer to another
+center than to its own, and the overlap step treated that as fatal. The fix is
+`aerof-patches/0001` (see `aerof-patches/README.md`). It is built as a separate executable and
+used only for the clustered POD through `AEROF_POD`, so the production `aerof.opt` stays
+untouched. `local.json` records the executable and its commit. The regression check comes first:
+the k = 8 POD without a minimum, rebuilt with the fix as `reductionrun256-c8-regress`, must
+match `reductionrun256-c8`.
+
 ## 15. HPROM comes after the 5D global PROM is trusted
 
 The planned HPROM order is:

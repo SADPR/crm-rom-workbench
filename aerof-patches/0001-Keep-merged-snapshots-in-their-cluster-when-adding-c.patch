@@ -1,0 +1,45 @@
+From 575b4f5485ba4f74a19b2a81eb7bdc1c6ccc3e2b Mon Sep 17 00:00:00 2001
+From: SADPR <aresdepargas@gmail.com>
+Date: Sun, 4 Oct 2026 13:04:51 -0700
+Subject: [PATCH] Keep merged snapshots in their cluster when adding cluster
+ overlap
+
+With MinClusterSize, a small cluster is merged into its nearest one and the two centers are
+replaced by their weighted mean. A snapshot of the merged cluster can then lie closer to
+another center than to its own, and addClusterOverlap aborted with "something is wrong with
+cluster indices". Keep the snapshot's assigned cluster as its home and take the closer center
+as its neighbor. Runs that never merged a cluster always had index1 == clusterIndex, so they
+follow exactly the same code path as before.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+---
+ NonlinearRomClustering.C | 11 +++++++----
+ 1 file changed, 7 insertions(+), 4 deletions(-)
+
+diff --git a/NonlinearRomClustering.C b/NonlinearRomClustering.C
+index f247be07..2aaf180b 100644
+--- a/NonlinearRomClustering.C
++++ b/NonlinearRomClustering.C
+@@ -399,12 +399,15 @@ void Clustering<VecType>::addClusterOverlap(VecSet<VecType>& snapshots,
+   for(int iSnap = 0; iSnap < nTotSnaps; ++iSnap) {
+     int index1, index2;
+     closestCenterFull(snapshots[iSnap], &index1, &index2);
+-    clusterNeighborsSet[index1].insert(index2);
+-    clusterNeighborsSet[index2].insert(index1);
++    // Merging a small cluster into its nearest one (MinClusterSize) replaces two centers by
++    // their weighted mean, so a snapshot of the merged cluster can lie closer to another center
++    // than to its own. Its own cluster stays its home, and that closer center its neighbor.
+     if(index1 != clusterIndex[iSnap]) {
+-      fprintf(stderr, "*** Error: something is wrong with cluster indices in addClusterOverlap()\n");
+-      exit(-1);
++      index2 = index1;
++      index1 = clusterIndex[iSnap];
+     }
++    clusterNeighborsSet[index1].insert(index2);
++    clusterNeighborsSet[index2].insert(index1);
+     snapshotNeighbors[iSnap] = index2;
+   }
+   clusterNeighborsCount = new int[nClusters];
+-- 
+2.43.0
+
