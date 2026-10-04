@@ -9,8 +9,10 @@ back from the output and recorded in local.json; the PROMs must use that count.
 """
 
 import argparse
+import os
 import re
 import shutil
+import subprocess
 from pathlib import Path
 
 import sobol5d_campaign as campaign
@@ -20,10 +22,20 @@ import sobol5d_projection as projection
 KMEANS_SEED = 20260930
 
 
-def local_dir(settings, count, clusters, min_size=None):
+def local_dir(settings, count, clusters, min_size=None, suffix=''):
     """Return the reduction directory of one batch's clustered POD."""
-    suffix = '-m{}'.format(min_size) if min_size else ''
-    return Path(settings.MasterDir) / 'reductionrun{:03d}-c{}{}'.format(count, clusters, suffix)
+    size = '-m{}'.format(min_size) if min_size else ''
+    tag = '-{}'.format(suffix) if suffix else ''
+    return Path(settings.MasterDir) / 'reductionrun{:03d}-c{}{}{}'.format(count, clusters, size, tag)
+
+
+def aerof_provenance():
+    """Return the AERO-F executable and the commit of the tree it was built in."""
+    aerof = os.environ.get('AEROF', '')
+    tree = Path(aerof).parents[2] if aerof else None
+    commit = subprocess.run(['git', '-C', str(tree), 'rev-parse', 'HEAD'], capture_output=True,
+                            text=True).stdout.strip() if tree and tree.is_dir() else ''
+    return {'aerof': aerof, 'aerof_commit': commit}
 
 
 def cluster_summary(directory):
@@ -36,11 +48,11 @@ def cluster_summary(directory):
     return clusters, snapshots, bases
 
 
-def build(count, clusters, overlap, seed=KMEANS_SEED, min_size=None):
+def build(count, clusters, overlap, seed=KMEANS_SEED, min_size=None, suffix=''):
     """Run AERO-F's clustered POD of one assembled batch."""
     settings = campaign.configure_settings()
     pod = campaign.pod_dir(settings, count)
-    target = local_dir(settings, count, clusters, min_size)
+    target = local_dir(settings, count, clusters, min_size, suffix)
     if target.exists():
         raise RuntimeError('{} exists; refusing to overwrite a POD.'.format(target))
     for path in (pod / 'input.pod', pod / 'statesnapdata.txt', pod / 'parsoldata.txt'):
@@ -77,6 +89,7 @@ def build(count, clusters, overlap, seed=KMEANS_SEED, min_size=None):
         'percent_overlap': overlap,
         'kmeans_seed': seed,
         'min_cluster_size': min_size,
+        **aerof_provenance(),
         'snapshots_per_cluster': snapshots,
         'basis_sizes': bases,
     })
@@ -91,12 +104,13 @@ def main():
     parser.add_argument('--count', type=int, required=True)
     parser.add_argument('--clusters', type=int, required=True)
     parser.add_argument('--overlap', type=float, default=20.0, help='percent overlap (HGV2 uses 20)')
+    parser.add_argument('--suffix', default='', help='extra directory tag, e.g. regress')
     parser.add_argument('--min-size', type=int,
                         help='MinClusterSize: merge clusters with fewer own snapshots (d + 1 = 6 is the rule)')
     args = parser.parse_args()
     if args.clusters < 2:
         raise ValueError('--clusters must be at least 2; the global POD is the one-cluster case.')
-    build(args.count, args.clusters, args.overlap, min_size=args.min_size)
+    build(args.count, args.clusters, args.overlap, min_size=args.min_size, suffix=args.suffix)
 
 
 if __name__ == '__main__':
