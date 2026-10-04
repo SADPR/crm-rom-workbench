@@ -19,8 +19,9 @@ set -euo pipefail
 work_dir=${SLURM_SUBMIT_DIR:?Submit this script from greedy-procedure/.}
 repo_dir=$(cd "${work_dir}/.." && pwd)
 cd "${work_dir}"
-# Extra arguments, e.g. --dt 5e-5 --max-time 0.2 --newton 30 --dual-cfl 100, go to prepare.
-index=${SLURM_ARRAY_TASK_ID:?Usage: sbatch --array=LIST%4 submit_sobol5d_unsteady.sbatch [--dt S --max-time S --newton N --dual-cfl C]}
+# Extra arguments, e.g. --dt 5e-5 --max-time 0.03 --name unsteady-dt5e-5, go to every stage;
+# --name keeps the run in its own folder, so a dt study does not touch HDMrunNNN/unsteady/.
+index=${SLURM_ARRAY_TASK_ID:?Usage: sbatch --array=LIST%4 submit_sobol5d_unsteady.sbatch [--dt S --max-time S --newton N --dual-cfl C --name unsteady...]}
 
 [[ "${SLURM_NTASKS}" -eq 120 ]] || {
     echo "Expected 120 MPI tasks, received ${SLURM_NTASKS}." >&2
@@ -51,5 +52,5 @@ export MKL_NUM_THREADS=1
 } > "Sobol5DRuns/logs/unsteady_${SLURM_ARRAY_JOB_ID}_${index}.env"
 
 python3 -B sobol5d_unsteady.py prepare --run-index "${index}" "$@"
-python3 -B sobol5d_unsteady.py run --run-index "${index}"
-python3 -B sobol5d_unsteady.py summary --run-index "${index}"
+python3 -B sobol5d_unsteady.py run --run-index "${index}" "$@"
+python3 -B sobol5d_unsteady.py summary --run-index "${index}" "$@"

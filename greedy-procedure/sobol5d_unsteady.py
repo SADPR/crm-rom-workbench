@@ -9,7 +9,7 @@ so the physics and discretization stay those of the steady HDM. Only these chang
   Newton matrix only, so GMRES converges while the converged step is unchanged (TimeState.C,
   MatVecProd.C). The term is for the HDM only; a PROM or HPROM must run with it off, since there
   it would change the LSPG test basis J V;
-- the outputs, which go to HDMrunNNN/unsteady/;
+- the outputs, which go to HDMrunNNN/unsteady/ (or another unsteady* folder, e.g. for a dt study);
 - the start, which is the steady references/Solution.bin at time zero (no RestartData).
 """
 
@@ -34,14 +34,17 @@ DEFAULT_MAX_TIME = 0.3
 # residual fell by only 2-10 of the required 1000.
 DEFAULT_NEWTON = 30
 DEFAULT_DUAL_CFL = 100.0
-SNAPSHOT_EVERY = 50
-FIELD_EVERY = 100
+# Output intervals in physical time, so runs with different dt write at the same instants
+# (every 50 and 100 steps at the default dt).
+SNAPSHOT_INTERVAL = 0.005
+FIELD_INTERVAL = 0.01
+DEFAULT_NAME = 'unsteady'
 SPECTRUM_PADDING = 16
 # Output fields the unsteady test does not need; blanking them does not change the solve.
 UNUSED_OUTPUTS = ('FluxResidual = "FluxRes.bin";', 'Displacement = "Displacement.bin";')
 SPEED_OF_SOUND = (1.4 * 22632.0 / 0.3639) ** 0.5
 EXO_FIELDS = ('Mach', 'PressureCoefficient', 'SkinFriction', 'Velocity')
-# AERO-F appends a field frame every FIELD_EVERY steps (about 100 min) in a few seconds; merge
+# AERO-F appends a field frame every FIELD_INTERVAL (about 100 min) in a few seconds; merge
 # only when the last write is older than this, so no frame is read half written.
 WRITE_QUIET = 120.0
 # Steady restart from the final unsteady state: enough iterations to see whether the steady
@@ -67,7 +70,19 @@ def last_stage(directory):
     return stages[-1]
 
 
-def unsteady_input(directory, stage, dt, max_time, newton, dual_cfl):
+def steps(interval, dt):
+    """Return the number of time steps in one output interval."""
+    return max(1, int(round(interval / dt)))
+
+
+def run_folder(name):
+    """Check an unsteady run's folder name: one level, starting with 'unsteady'."""
+    if not re.fullmatch(r'unsteady[\w.+-]*', name):
+        raise ValueError('The run name must be one folder starting with "unsteady", not {!r}.'.format(name))
+    return name
+
+
+def unsteady_input(directory, stage, dt, max_time, newton, dual_cfl, name=DEFAULT_NAME):
     """Return the unsteady input built from the steady input of the given stage."""
     source = directory / 'input{}'.format(stage)
     text = source.read_text()
@@ -75,7 +90,7 @@ def unsteady_input(directory, stage, dt, max_time, newton, dual_cfl):
     if len(ran_in) != 1:
         raise RuntimeError('Cannot find the restart prefix in {}.'.format(source))
     old, here = ran_in[0], '{}/'.format(directory.as_posix())
-    out = '{}unsteady/'.format(here)
+    out = '{}{}/'.format(here, run_folder(name))
     # The Newton block's linear solver, up to its own closing brace (nine spaces in).
     linear = re.search(r'\n(         under LinearSolver \{.*?\n         \}\n)', text, re.S)
     time_block = re.search(r'\nunder Time \{.*?\n\}\n', text, re.S)
@@ -103,9 +118,9 @@ def unsteady_input(directory, stage, dt, max_time, newton, dual_cfl):
         (old, here, None),
         (time_block.group(0), new_time, 1),
         ('   under Postpro {\n      Frequency = 0;', '   under Postpro {{\n      Frequency = {};'
-         .format(FIELD_EVERY), 1),
+         .format(steps(FIELD_INTERVAL, dt)), 1),
         ('      StateVector = "State.bin";\n      Frequency = 0;',
-         '      StateVector = "State.bin";\n      Frequency = {};'.format(SNAPSHOT_EVERY), 1),
+         '      StateVector = "State.bin";\n      Frequency = {};'.format(steps(SNAPSHOT_INTERVAL, dt)), 1),
         ('OutputResidualSnapshotData = True;', 'OutputResidualSnapshotData = False;', 1),
     ]
     replacements += [(line, '{} = "";'.format(line.split(' = ')[0]), 1) for line in UNUSED_OUTPUTS]
@@ -116,7 +131,7 @@ def unsteady_input(directory, stage, dt, max_time, newton, dual_cfl):
 
 
 def prepare(index, dt=DEFAULT_DT, max_time=DEFAULT_MAX_TIME, newton=DEFAULT_NEWTON,
-            dual_cfl=DEFAULT_DUAL_CFL):
+            dual_cfl=DEFAULT_DUAL_CFL, name=DEFAULT_NAME):
     """Write the unsteady input of one converged or accepted training HDM."""
     settings = campaign.configure_settings()
     point = campaign.read_manifest()['points'][index - 1]
@@ -129,27 +144,27 @@ def prepare(index, dt=DEFAULT_DT, max_time=DEFAULT_MAX_TIME, newton=DEFAULT_NEWT
     log = directory / 'log{}'.format(stage)
     if abs(solution.stat().st_mtime - log.stat().st_mtime) > 600:
         raise RuntimeError('{} was not written at the end of stage {}.'.format(solution, stage))
-    target = directory / 'unsteady'
+    target = directory / run_folder(name)
     if target.exists():
         raise RuntimeError('{} exists; refusing to overwrite an unsteady run.'.format(target))
-    text = unsteady_input(directory, stage, dt, max_time, newton, dual_cfl)
-    for name in ('results', 'postpro', 'references', 'snapshots'):
-        (target / name).mkdir(parents=True)
+    text = unsteady_input(directory, stage, dt, max_time, newton, dual_cfl, name)
+    for folder in ('results', 'postpro', 'references', 'snapshots'):
+        (target / folder).mkdir(parents=True)
     (target / 'input').write_text(text)
     campaign.write_json(target / 'unsteady.json', {
         'index': index, 'point': point, 'steady_state': state, 'steady_residual': residual,
         'start': str(solution.parent / 'Solution.bin'), 'template': 'input{}'.format(stage),
-        'time_step': dt, 'max_time': max_time, 'newton_iterations': newton,
+        'name': name, 'time_step': dt, 'max_time': max_time, 'newton_iterations': newton,
         'dual_time_cfl': dual_cfl if dual_cfl > 0 else None,
         'convective_time': 1.0 / (point[0] * SPEED_OF_SOUND),
     })
     print('Prepared {} from input{} ({} steady state).'.format(target / 'input', stage, state))
 
 
-def run(index):
+def run(index, name=DEFAULT_NAME):
     """Run one prepared unsteady HDM."""
     settings = campaign.configure_settings()
-    target = hdm_directory(settings, index) / 'unsteady'
+    target = hdm_directory(settings, index) / run_folder(name)
     if not (target / 'input').is_file():
         raise RuntimeError('Run the prepare action first.')
     if (target / 'log').exists():
@@ -174,12 +189,13 @@ def step_convergence(log, tolerance=1.0e-3):
     }
 
 
-def summary(index):
+def summary(index, name=DEFAULT_NAME):
     """Report how lift and drag evolve from the steady state, and any oscillation frequency."""
     settings = campaign.configure_settings()
     directory = hdm_directory(settings, index)
-    meta = json.loads((directory / 'unsteady/unsteady.json').read_text())
-    rows = projection.table(directory / 'unsteady/postpro/liftdrag.out')
+    target = directory / run_folder(name)
+    meta = json.loads((target / 'unsteady.json').read_text())
+    rows = projection.table(target / 'postpro/liftdrag.out')
     steady = projection.table(directory / 'postpro/liftdrag.out')[-1]
     time, drag, lift = rows[:, 1], rows[:, 4], rows[:, 5]
     late = time >= 0.5 * time[-1]
@@ -210,16 +226,16 @@ def summary(index):
     result = {'index': index, 'time': float(time[-1]),
               'convective_times': float(time[-1] / meta['convective_time']),
               'time_step_max_deviation': deviation,
-              'convergence': step_convergence(directory / 'unsteady/log'), **values}
-    campaign.write_json(directory / 'unsteady/summary.json', result)
+              'convergence': step_convergence(target / 'log'), **values}
+    campaign.write_json(target / 'summary.json', result)
     print(json.dumps(result, indent=1))
 
 
-def exo(index):
+def exo(index, name=DEFAULT_NAME):
     """Merge the field frames written so far into one Exodus file; the run keeps going."""
     settings = campaign.configure_settings()
     directory = hdm_directory(settings, index)
-    results, out = directory / 'unsteady/results', directory / 'unsteady/exo'
+    results, out = directory / run_folder(name) / 'results', directory / run_folder(name) / 'exo'
     written = [path for field in EXO_FIELDS for path in results.glob('{}.bin[0-9]*'.format(field))]
     if not written:
         raise RuntimeError('{} holds no field frames yet.'.format(results))
@@ -238,7 +254,7 @@ def exo(index):
         xposts.append(out / '{}.xpost'.format(field))
         if not xposts[-1].is_file():
             raise RuntimeError('sower did not write {}; see {}.'.format(xposts[-1], out / 'sower.log'))
-    exo_file = out / 'unsteady_{:03d}.exo'.format(index)
+    exo_file = out / '{}_{:03d}.exo'.format(name, index)
     if exo_file.exists():
         exo_file.unlink()
     decomposition = '{}.top.dec.{}'.format(settings.TopFilePath, settings.HDMnproc)
@@ -365,19 +381,21 @@ def main():
     parser.add_argument('--dt', type=float, default=DEFAULT_DT, help='physical time step (s)')
     parser.add_argument('--max-time', type=float, default=DEFAULT_MAX_TIME, help='physical time (s)')
     parser.add_argument('--newton', type=int, default=DEFAULT_NEWTON, help='Newton iterations per step')
+    parser.add_argument('--name', default=DEFAULT_NAME,
+                        help='run folder below HDMrunNNN/, starting with "unsteady" (e.g. unsteady-dt5e-5)')
     parser.add_argument('--dual-cfl', type=float, default=DEFAULT_DUAL_CFL,
                         help='pseudo-time CFL of dual time stepping; 0 turns it off')
     args = parser.parse_args()
     if args.mode == 'prepare':
-        prepare(args.run_index, args.dt, args.max_time, args.newton, args.dual_cfl)
+        prepare(args.run_index, args.dt, args.max_time, args.newton, args.dual_cfl, args.name)
     elif args.mode == 'run':
-        run(args.run_index)
+        run(args.run_index, args.name)
     elif args.mode == 'exo':
-        exo(args.run_index)
+        exo(args.run_index, args.name)
     elif args.mode == 'resteady':
         resteady(args.run_index)
     else:
-        summary(args.run_index)
+        summary(args.run_index, args.name)
 
 
 if __name__ == '__main__':
