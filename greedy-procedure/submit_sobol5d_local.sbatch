@@ -44,6 +44,7 @@ export MKL_NUM_THREADS=1
 }
 
 python3 -B sobol5d_local.py pod --count "${count}" --clusters "${clusters}" --overlap "${overlap}"
-# Every test point with the POD-128 sweep winner: Delaunay start, NonDescriptor, 5 iterations.
-python3 -B sobol5d_sweep.py init --pod "${count}" --name "local${clusters}_" --points 1-32 \
-    --starts delaunay --forms nondescriptor --basis "reductionrun${count}-c${clusters}"
+# Every test point with the start restricted to the PROM's starting cluster, so the start lies in
+# its local basis (a plain Delaunay start mixes clusters; see the handoff), NonDescriptor, 5 x 30.
+python3 -B sobol5d_sweep.py init --pod "${count}" --name "local${clusters}ic_" --points 1-32 \
+    --starts delaunay-cluster --forms nondescriptor --basis "reductionrun${count}-c${clusters}"
