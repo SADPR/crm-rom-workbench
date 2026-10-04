@@ -16,6 +16,7 @@ import re
 import numpy as np
 import pyaeroopt
 import scipy.interpolate
+import scipy.spatial
 
 import sobol5d_campaign as campaign
 import sobol5d_projection as projection
@@ -290,8 +291,12 @@ def cluster_weights(catalog, point, inside):
     """
     weights = np.zeros(len(catalog))
     members = catalog[inside]
-    local = scipy.interpolate.LinearNDInterpolator(members, np.eye(len(members)), rescale=True)(
-        np.asarray(point, dtype=float))[0]
+    # A cluster with too few or degenerate parameter points has no 5D triangulation at all.
+    try:
+        local = scipy.interpolate.LinearNDInterpolator(members, np.eye(len(members)), rescale=True)(
+            np.asarray(point, dtype=float))[0]
+    except (scipy.spatial.QhullError, ValueError):
+        local = np.full(len(members), np.nan)
     method = 'delaunay'
     if np.isnan(local).any():
         distance = np.linalg.norm(test.unit_cube(catalog, members) - test.unit_cube(catalog, point),
