@@ -33,7 +33,8 @@ def aerof_provenance():
     """Return the AERO-F executable and the commit of the tree it was built in."""
     aerof = os.environ.get('AEROF', '')
     tree = Path(aerof).parents[2] if aerof else None
-    commit = subprocess.run(['git', '-C', str(tree), 'rev-parse', 'HEAD'], capture_output=True,
+    # cwd instead of "git -C": Sherlock's git predates it.
+    commit = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=str(tree), capture_output=True,
                             text=True).stdout.strip() if tree and tree.is_dir() else ''
     return {'aerof': aerof, 'aerof_commit': commit}
 

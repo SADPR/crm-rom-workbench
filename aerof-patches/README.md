@@ -24,15 +24,15 @@ or a pull request and never directly to master, is a separate decision.
 - Effect elsewhere: none. Runs that never merge a cluster always had the closest center equal to
   the assigned one, since the old code aborted otherwise, so they follow the same code path.
 
-On Sherlock:
+On Sherlock (its git has no `git worktree` and no `git -C`, so the variant is a separate local
+clone; the production clone is only read):
 
 ```bash
-cd /scratch/users/sadpr/Code3Aug/aero-f
-git log --oneline -1          # must be 069ef9d8
-git status -sb                # must be clean
-git worktree add -b fix/cluster-overlap-after-merge /scratch/users/sadpr/Code3Aug/aerof-overlapfix 069ef9d8
+git clone /scratch/users/sadpr/Code3Aug/aero-f /scratch/users/sadpr/Code3Aug/aerof-overlapfix
 cd /scratch/users/sadpr/Code3Aug/aerof-overlapfix
+git checkout -b fix/cluster-overlap-after-merge 069ef9d8
 git am /scratch/users/sadpr/Code3Aug/crm-rom-workbench/aerof-patches/0001-Keep-merged-snapshots-in-their-cluster-when-adding-c.patch
+git log --oneline -2          # the fix on top of 069ef9d8
 cd /scratch/users/sadpr/Code3Aug/crm-rom-workbench/greedy-procedure
 sbatch ../aerof-patches/build_aerof_variant.sbatch /scratch/users/sadpr/Code3Aug/aerof-overlapfix
 ```

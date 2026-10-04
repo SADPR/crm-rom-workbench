@@ -28,6 +28,10 @@ build=${source_dir}/build-scalapack
     echo "Refusing to build inside the production tree." >&2
     exit 1
 }
+[[ -d "${source_dir}/.git" ]] || {
+    echo "${source_dir} is not a git clone." >&2
+    exit 1
+}
 [[ ! -e "${build}" ]] || {
     echo "${build} exists; refusing to overwrite a build." >&2
     exit 1
@@ -58,8 +62,9 @@ cmake --build "${build}" -j "${SLURM_CPUS_PER_TASK}"
 new=$(find "${build}/bin" -name aerof.opt -type f)
 old=${production_build}/bin/aerof.opt
 echo "Built ${new}"
-echo "Source: $(git -C "${source_dir}" log --oneline -1)"
-echo "Base:   $(git -C "${source_dir}" log --oneline -1 HEAD~1)"
+# Sherlock's git predates "git -C", so change directory instead.
+echo "Source: $(cd "${source_dir}" && git log --oneline -1)"
+echo "Base:   $(cd "${source_dir}" && git log --oneline -1 HEAD~1)"
 # Same configuration, same linked BLAS/ScaLAPACK: both must list the same libraries.
 echo "Linked libraries that differ from production (expected: none):"
 diff <(ldd "${old}" | awk '{print $1}' | sort) <(ldd "${new}" | awk '{print $1}' | sort) && echo none
