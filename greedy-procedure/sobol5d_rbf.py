@@ -12,6 +12,7 @@ rbf_trainer.py (Gaussian kernel, min-max scaling, epsilon by a 90/10 split, refi
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -74,15 +75,19 @@ def train(count, dim):
             states, count))
         np.savetxt(handle, coords, fmt='%.16e', delimiter=',')
     log = target / 'train.log'
+    # Unbuffered, so a killed trainer still leaves its output; one thread, since the fit is small
+    # and login nodes limit what a process may use.
+    environment = dict(os.environ, OMP_NUM_THREADS='1', MKL_NUM_THREADS='1', OPENBLAS_NUM_THREADS='1')
     with open(log, 'w') as handle:
-        result = subprocess.run([sys.executable, '-B', str(Path(__file__).with_name('rbf_trainer.py')),
+        result = subprocess.run([sys.executable, '-u', '-B', str(Path(__file__).with_name('rbf_trainer.py')),
                                  '--data_file', str(data), '--dimV', str(dim),
                                  '--output_path', '{}/'.format(target.as_posix()),
                                  '--eps_min', str(EPS_RANGE[0]), '--eps_max', str(EPS_RANGE[1]),
                                  '--n_eps', str(EPS_RANGE[2]), '--kernels', KERNELS],
-                                stdout=handle, stderr=subprocess.STDOUT, check=False)
+                                stdout=handle, stderr=subprocess.STDOUT, check=False, env=environment)
     if result.returncode != 0:
-        raise RuntimeError('rbf_trainer.py failed; see {}.'.format(log))
+        # A negative code is the signal that stopped it (e.g. -9 when a node limit kills it).
+        raise RuntimeError('rbf_trainer.py exited with {}; see {}.'.format(result.returncode, log))
     missing = [name for name in AERO_F_FILES if not (target / name).is_file()]
     if missing:
         raise RuntimeError('rbf_trainer.py did not write {}.'.format(', '.join(missing)))
