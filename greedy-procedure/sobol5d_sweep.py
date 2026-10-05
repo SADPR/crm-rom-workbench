@@ -69,12 +69,13 @@ def weights_path(root, start, index):
 
 
 def initialize(count, name='sweep', points=POINTS, starts=tuple(STARTS), forms=tuple(FORMS),
-               iterations=SWEEP_ITS, basis=None, inner=None):
+               iterations=SWEEP_ITS, basis=None, inner=None, rbf=None):
     """Freeze the run list and write the external IC weights of every point.
 
     `basis` names a clustered reduction directory next to the global one (sobol5d_local.py);
     its PROMs keep the global IDW catalog, whose IC products that POD also computed.
     `inner` replaces the Gauss-Newton iterations per outer iteration (30 in runs.py).
+    `rbf` names a global RBF closure (sobol5d_rbf.py) that turns the PROM into a PROM-RBF.
     """
     settings = campaign.configure_settings()
     pod = campaign.pod_dir(settings, count)
@@ -92,6 +93,17 @@ def initialize(count, name='sweep', points=POINTS, starts=tuple(STARTS), forms=t
                  'clusters': json.loads(record.read_text())['clusters']}
     if 'delaunay-cluster' in starts and local is None:
         raise ValueError('The delaunay-cluster start needs a clustered --basis.')
+    closure = None
+    if rbf is not None:
+        if local is not None:
+            raise ValueError('The RBF closures here are global; drop --basis with --rbf.')
+        record = Path(settings.MasterDir) / rbf / 'rbf.json'
+        if not record.is_file():
+            raise RuntimeError('Missing {}; train the RBF closure first.'.format(record))
+        meta = json.loads(record.read_text())
+        closure = {'directory': str(Path(settings.MasterDir) / rbf),
+                   'primary_dimension': meta['primary_dimension'],
+                   'secondary_dimension': meta['secondary_dimension']}
     if 'projection' in starts:
         diagnostic = projection.diagnostic_dir(settings, count)
         if not (diagnostic / 'log.projection').is_file():
@@ -139,6 +151,7 @@ def initialize(count, name='sweep', points=POINTS, starts=tuple(STARTS), forms=t
         'starts': {start: STARTS[start] for start in starts},
         'forms': {form: FORMS[form] for form in forms},
         'basis': local,
+        'rbf': closure,
         'cluster_starts': cluster_starts,
         'runs': runs,
     })
@@ -149,7 +162,7 @@ def initialize(count, name='sweep', points=POINTS, starts=tuple(STARTS), forms=t
             record['plain_delaunay_cluster']))
 
 
-def sweep_input(settings, count, run, root, iterations, basis=None, inner=None):
+def sweep_input(settings, count, run, root, iterations, basis=None, inner=None, rbf=None):
     """Return the original PROM input of the run's point with the sweep's changes applied."""
     index = run['point']
     pod = campaign.pod_dir(settings, count)
@@ -180,6 +193,13 @@ def sweep_input(settings, count, run, root, iterations, basis=None, inner=None):
     ]
     if inner is not None:
         replacements.append((newton[0], '      under Newton {{\n         MaxIts = {};'.format(inner), 1))
+    if rbf is not None:
+        # AERO-F takes the first n POD modes as V and the next nbar as Vbar, and reads the
+        # closure from this prefix (it must end in a slash).
+        replacements += [
+            ('UseGeneralManifold = False;', 'UseGeneralManifold = True;', 1),
+            ('GeneralManifoldRbfName = "";', 'GeneralManifoldRbfName = "{}/";'.format(rbf['directory']), 1),
+        ]
     if basis is not None:
         replacements += [
             ('Prefix = "{}/";'.format(pod.as_posix()), 'Prefix = "{}/";'.format(basis['directory']), 1),
@@ -221,7 +241,7 @@ def run_prom(count, number, name='sweep'):
     if directory.exists():
         raise RuntimeError('{} exists; refusing to overwrite a PROM.'.format(directory))
     text = sweep_input(settings, count, run, sweep_dir(settings, count, name), sweep['iterations'],
-                       sweep.get('basis'), sweep.get('inner'))
+                       sweep.get('basis'), sweep.get('inner'), sweep.get('rbf'))
     original = test.prom_paths(settings, count, run['point'])[0]
     for folder in ('results', 'postpro'):
         (directory / folder).mkdir(parents=True)
@@ -396,9 +416,12 @@ def run_metrics(settings, count, run, root, iterations, wall, catalog, products,
     history = reduced_history(directory / 'postpro/ReducedCoords.out')
     clusters = [cluster for cluster, _ in history]
     start = expected_start(settings, run, root, catalog, products, truth_products, clusters[0])
+    # A PROM-RBF starts from the first n coordinates only; N(q0) supplies the rest.
+    start = start[:len(history[0][1])]
     weights = start_weights(settings, run, root, catalog)
     # How much of the blended start its projection onto the starting basis loses. On the first
     # local sweep, starts within their cluster gave below 0.01%, and the deformed ones 2-45%.
+    # For a PROM-RBF it is the gap between the manifold start u(q0) and the blended start.
     start_loss = (test.relative_error(frames[0], blended_start(weights, runs, training_cp), 2)
                   if weights is not None else None)
     _, _, final_residual = test.prom_residual(directory)
@@ -524,6 +547,7 @@ def main():
     parser.add_argument('--forms', default=','.join(FORMS), help='for init, comma-separated')
     parser.add_argument('--its', type=int, default=SWEEP_ITS, help='for init, outer iterations')
     parser.add_argument('--inner', type=int, help='for init, Gauss-Newton iterations per outer one')
+    parser.add_argument('--rbf', help='for init, a global RBF closure directory, e.g. rbf256-n6')
     parser.add_argument('--basis', help='for init, a clustered reduction directory, e.g. reductionrun256-c4')
     args = parser.parse_args()
 
@@ -533,7 +557,8 @@ def main():
             value for value in forms if value not in FORMS]
         if unknown or not all(1 <= index <= test.TEST_COUNT for index in args.points):
             raise ValueError('Unknown start, form, or test index: {}.'.format(unknown or args.points))
-        initialize(args.pod, args.name, args.points, starts, forms, args.its, args.basis, args.inner)
+        initialize(args.pod, args.name, args.points, starts, forms, args.its, args.basis, args.inner,
+                   args.rbf)
     elif args.mode == 'prom':
         if args.run is None:
             raise ValueError('--run is required for prom.')

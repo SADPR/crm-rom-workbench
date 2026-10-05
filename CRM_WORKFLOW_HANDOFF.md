@@ -1166,6 +1166,34 @@ untouched. `local.json` records the executable and its commit. The regression ch
 the k = 8 POD without a minimum, rebuilt with the fix as `reductionrun256-c8-regress`, must
 match `reductionrun256-c8`.
 
+### Global PROM-RBF (2026-10-04)
+
+The PROM-RBF state is u = u_ref + V q + Vbar N(q). V holds the first n POD-256 modes, Vbar the
+remaining 256 - n, and N is an RBF map read by AERO-F's general manifold (`UseGeneralManifold`,
+`GeneralManifoldRbfName`, a prefix ending in `/`).
+
+- Online, AERO-F starts from the first n coordinates of the blended start, and N(q0) supplies
+  the rest.
+- The tangent Psi = V + Vbar dN/dq needs the Eigen DenseMat build. Production has it: "EIGEN3
+  DenseMat backend activated".
+
+`sobol5d_rbf.py train --pod 256 --dim n` trains N:
+
+- Data: the full-basis coordinates of the 256 distinct training states, taken from AERO-F's
+  `state.basisUicProducts`, the products the online start uses (aliases dropped).
+- Fit: the supplied `rbf_trainer.py`, writing `Sobol5DRuns/rbf256-nN/`.
+- The trainer's default eps range [0.5, 10] misses the optimum on these data (about 0.04 to 0.13)
+  and gave validation errors above 100%. The driver searches [0.01, 10] with the Gaussian and IMQ
+  kernels.
+- Validation error of q_bar on the 10% held out: 40% (n = 6), 56% (n = 8), 60% (n = 12), against
+  101% for predicting the mean. The secondary part is about 4.5% (n = 6) of a training state's
+  coordinates, median, and 12 to 31% for the transonic ones. Expect a less accurate but much
+  cheaper PROM than the linear one, as in HGV2.
+
+`sobol5d_sweep.py init --rbf rbf256-nN` makes a sweep of PROM-RBFs. The input differs from the
+final global PROM's only in the two general-manifold lines. `submit_sobol5d_rbf.sh [JOB]` trains
+n = 6, 8 and 12 and chains their three 32-point sweeps (30 x 5).
+
 ## 15. HPROM comes after the 5D global PROM is trusted
 
 The planned HPROM order is:

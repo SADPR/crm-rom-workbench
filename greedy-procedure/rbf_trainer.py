@@ -18,11 +18,12 @@ def inverse_multiquadric_rbf(r, e): return 1.0 / np.sqrt(1 + (e * r) ** 2)
 def multiquadric_rbf(r, eps):       return np.sqrt(1 + (eps * r) ** 2)
 def linear_rbf(r, eps):             return r
 
+# Every kernel AERO-F's ReducedCoordRbf can evaluate; --kernels picks the ones searched.
 rbf_kernels = {
     "gaussian":      gaussian_rbf,
-    # "imq":           inverse_multiquadric_rbf,
-    # "multiquadric":  multiquadric_rbf,
-    # "linear":        linear_rbf,
+    "imq":           inverse_multiquadric_rbf,
+    "multiquadric":  multiquadric_rbf,
+    "linear":        linear_rbf,
 }
 # ------------------------------------------------------------------ #
 def unscale_y(y_scaled, scaling_method, y_info):
@@ -45,6 +46,11 @@ def main():
     p.add_argument("--output_path", default=".")
     p.add_argument("--skip_columns", default=0, type=int)
     p.add_argument("--skip_rows",    default=1, type=int)
+    # The defaults keep the original search (Gaussian, eps in [0.5, 10]).
+    p.add_argument("--eps_min", default=0.5, type=float)
+    p.add_argument("--eps_max", default=10.0, type=float)
+    p.add_argument("--n_eps", default=100, type=int)
+    p.add_argument("--kernels", default="gaussian", help="comma-separated, e.g. gaussian,imq")
     args = p.parse_args()
 
     if args.data_file is None:
@@ -91,8 +97,8 @@ def main():
         X_train, X_val, Y_train, Y_val = train_test_split(
             X, Y, test_size=0.10, random_state=42)
 
-        epsilons = np.logspace(np.log10(0.5), np.log10(10.0), 100)
-        kernels  = list(rbf_kernels)
+        epsilons = np.logspace(np.log10(args.eps_min), np.log10(args.eps_max), args.n_eps)
+        kernels  = args.kernels.split(",")
         best_err = np.inf
         best_W   = best_kernel = best_eps = None
 
