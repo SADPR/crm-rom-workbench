@@ -69,13 +69,14 @@ def weights_path(root, start, index):
 
 
 def initialize(count, name='sweep', points=POINTS, starts=tuple(STARTS), forms=tuple(FORMS),
-               iterations=SWEEP_ITS, basis=None, inner=None, rbf=None):
+               iterations=SWEEP_ITS, basis=None, inner=None, rbf=None, galerkin=False):
     """Freeze the run list and write the external IC weights of every point.
 
     `basis` names a clustered reduction directory next to the global one (sobol5d_local.py);
     its PROMs keep the global IDW catalog, whose IC products that POD also computed.
     `inner` replaces the Gauss-Newton iterations per outer iteration (30 in runs.py).
     `rbf` names a global RBF closure (sobol5d_rbf.py) that turns the PROM into a PROM-RBF.
+    `galerkin` replaces LSPG with Galerkin projection, V^T R = 0, solved by Newton.
     """
     settings = campaign.configure_settings()
     pod = campaign.pod_dir(settings, count)
@@ -94,6 +95,8 @@ def initialize(count, name='sweep', points=POINTS, starts=tuple(STARTS), forms=t
     if 'delaunay-cluster' in starts and local is None:
         raise ValueError('The delaunay-cluster start needs a clustered --basis.')
     closure = None
+    if galerkin and rbf is not None:
+        raise ValueError('The PROM-RBF here is LSPG only; drop --galerkin or --rbf.')
     if rbf is not None:
         if local is not None:
             raise ValueError('The RBF closures here are global; drop --basis with --rbf.')
@@ -146,6 +149,7 @@ def initialize(count, name='sweep', points=POINTS, starts=tuple(STARTS), forms=t
         'pod': count,
         'iterations': iterations,
         'inner': inner,
+        'projection': 'galerkin' if galerkin else 'lspg',
         'points': list(points),
         'flagged': list(FLAGGED),
         'starts': {start: STARTS[start] for start in starts},
@@ -162,7 +166,8 @@ def initialize(count, name='sweep', points=POINTS, starts=tuple(STARTS), forms=t
             record['plain_delaunay_cluster']))
 
 
-def sweep_input(settings, count, run, root, iterations, basis=None, inner=None, rbf=None):
+def sweep_input(settings, count, run, root, iterations, basis=None, inner=None, rbf=None,
+                galerkin=False):
     """Return the original PROM input of the run's point with the sweep's changes applied."""
     index = run['point']
     pod = campaign.pod_dir(settings, count)
@@ -193,6 +198,13 @@ def sweep_input(settings, count, run, root, iterations, basis=None, inner=None, 
     ]
     if inner is not None:
         replacements.append((newton[0], '      under Newton {{\n         MaxIts = {};'.format(inner), 1))
+    if galerkin:
+        # AERO-F solves the square V^T A V by LU for Galerkin and warns unless the solver is
+        # NormalEquations; QR applies to LSPG only.
+        replacements += [
+            ('Projection = LeastSquaresPetrovGalerkin;', 'Projection = Galerkin;', 1),
+            ('LeastSquaresSolver = QR;', 'LeastSquaresSolver = NormalEquations;', 1),
+        ]
     if rbf is not None:
         # AERO-F takes the first n POD modes as V and the next nbar as Vbar, and reads the
         # closure from this prefix (it must end in a slash).
@@ -241,7 +253,8 @@ def run_prom(count, number, name='sweep'):
     if directory.exists():
         raise RuntimeError('{} exists; refusing to overwrite a PROM.'.format(directory))
     text = sweep_input(settings, count, run, sweep_dir(settings, count, name), sweep['iterations'],
-                       sweep.get('basis'), sweep.get('inner'), sweep.get('rbf'))
+                       sweep.get('basis'), sweep.get('inner'), sweep.get('rbf'),
+                       sweep.get('projection') == 'galerkin')
     original = test.prom_paths(settings, count, run['point'])[0]
     for folder in ('results', 'postpro'):
         (directory / folder).mkdir(parents=True)
@@ -549,6 +562,7 @@ def main():
     parser.add_argument('--inner', type=int, help='for init, Gauss-Newton iterations per outer one')
     parser.add_argument('--rbf', help='for init, a global RBF closure directory, e.g. rbf256-n6')
     parser.add_argument('--basis', help='for init, a clustered reduction directory, e.g. reductionrun256-c4')
+    parser.add_argument('--galerkin', action='store_true', help='for init, Galerkin instead of LSPG')
     args = parser.parse_args()
 
     if args.mode == 'init':
@@ -558,7 +572,7 @@ def main():
         if unknown or not all(1 <= index <= test.TEST_COUNT for index in args.points):
             raise ValueError('Unknown start, form, or test index: {}.'.format(unknown or args.points))
         initialize(args.pod, args.name, args.points, starts, forms, args.its, args.basis, args.inner,
-                   args.rbf)
+                   args.rbf, args.galerkin)
     elif args.mode == 'prom':
         if args.run is None:
             raise ValueError('--run is required for prom.')
