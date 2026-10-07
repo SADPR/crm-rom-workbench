@@ -21,6 +21,7 @@ import scipy.spatial
 import sobol5d_campaign as campaign
 import sobol5d_projection as projection
 import sobol5d_test as test
+from sobol5d_unsteady import cp_star
 
 
 # The 4 diagnostic points first, then the rest of the 11 whose POD-128 PROM misplaces the
@@ -36,14 +37,22 @@ STARTS = {
                          'start lies in that local basis (IDW over its nearest states outside their hull)'),
     'rbf': 'RBF interpolation, linear kernel with a degree-1 polynomial, unit-cube parameters',
     'projection': 'orthogonal projection of the truth (reference, not a practical start)',
+    'shock': ('Delaunay (IDW outside their hull) over the training states with the shock structure '
+              'predicted at the point by cubic RBFs: shocked near the predicted position, or unshocked'),
 }
 FORMS = {'nondescriptor': 'NonDescriptor', 'descriptor': 'Descriptor', 'hybrid': 'Hybrid'}
 SWEEP_ITS = 5
 # Starts read from an external weights file (InterpICWeights).
-WEIGHTED_STARTS = ('delaunay', 'rbf', 'delaunay-cluster')
+WEIGHTED_STARTS = ('delaunay', 'rbf', 'delaunay-cluster', 'shock')
 # Fallback of the cluster start outside the hull of its cluster's parameters: as many
 # neighbors as a 5D simplex has vertices.
 CLUSTER_NEIGHBORS = 6
+# Shock start. A shock is the steepest Cp rise behind a supersonic region on 0.1 < x/c < 0.95,
+# counted when dCp/d(x/c) reaches SHOCK_STRENGTH (the detector of the result slides). The window
+# around the predicted position widens until it holds SHOCK_NEIGHBORS training states.
+SHOCK_STRENGTH = 3.0
+SHOCK_WINDOWS = (0.02, 0.03, 0.04, 0.05, 0.06)
+SHOCK_NEIGHBORS = 6
 # Output fields the sweep metrics do not use; blanking them does not change the solve.
 UNUSED_OUTPUTS = ('Mach = "Mach.bin";', 'Displacement = "Displacement.bin";',
                   'Velocity = "Velocity.bin";', 'FluxResidual = "FluxRes.bin";',
@@ -119,7 +128,7 @@ def initialize(count, name='sweep', points=POINTS, starts=tuple(STARTS), forms=t
             raise RuntimeError('Missing {}; run the original PROM first.'.format(source))
     catalog = test.catalog_points(pod)
     root.mkdir(parents=True)
-    cluster_starts = {}
+    cluster_starts, shock_starts = {}, {}
     for start in starts:
         if start not in WEIGHTED_STARTS:
             continue
@@ -129,10 +138,17 @@ def initialize(count, name='sweep', points=POINTS, starts=tuple(STARTS), forms=t
             runs_of = catalog_runs(pod)
             members = cluster_members(directory, local['clusters'])
             distances = read_clustered(directory / 'nonlinearrom/state.ucUicDist')
+        if start == 'shock':
+            raw_nodes = np.loadtxt('{}_nodes'.format(settings.TopFilePath), dtype=np.float64)
+            wall = test.wall_nodes('{}.top'.format(settings.TopFilePath), raw_nodes)
+            shocks = training_shocks(catalog, catalog_runs(pod), wall, wall_surfaces(raw_nodes, wall))
         for index in points:
             if start == 'delaunay-cluster':
                 weights, record = cluster_start(catalog, test_points[index - 1], runs_of, members, distances)
                 cluster_starts['{:03d}'.format(index)] = record
+            elif start == 'shock':
+                weights, record = shock_weights(catalog, test_points[index - 1], shocks)
+                shock_starts['{:03d}'.format(index)] = record
             else:
                 weights = test.interpolation_weights(start, catalog, test_points[index - 1])
             test.write_weights(weights_path(root, start, index), weights)
@@ -157,6 +173,7 @@ def initialize(count, name='sweep', points=POINTS, starts=tuple(STARTS), forms=t
         'basis': local,
         'rbf': closure,
         'cluster_starts': cluster_starts,
+        'shock_starts': shock_starts,
         'runs': runs,
     })
     print('Initialized {} with {} runs.'.format(root, len(runs)))
@@ -164,6 +181,14 @@ def initialize(count, name='sweep', points=POINTS, starts=tuple(STARTS), forms=t
         print('  point {}: start in cluster {} ({}, consistent: {}; plain Delaunay picks {})'.format(
             index, record['cluster'], record['method'], record['consistent'],
             record['plain_delaunay_cluster']))
+    for index, record in shock_starts.items():
+        if record['structure'] == 'no-shock':
+            print('  point {}: no shock predicted; {} over the {} unshocked states'.format(
+                index, record['method'], record['candidates']))
+        else:
+            print('  point {}: {} shock predicted at x/c = {:.3f}; {} over the {} states within {:.3f}c'.format(
+                index, record['surface'], record['position'], record['method'], record['candidates'],
+                record['window']))
 
 
 def sweep_input(settings, count, run, root, iterations, basis=None, inner=None, rbf=None,
@@ -299,6 +324,87 @@ def catalog_runs(pod):
     return [re.match(r'(\S*/HDMrun\d{3})/', lines[2 + entry * (size + 1)]).group(1)
             for entry in range(count)]
 
+
+def wall_surfaces(raw_nodes, wall):
+    """Return, per surface, the positions within `wall` sorted by x and their x/c (reference mesh)."""
+    x = raw_nodes[wall, 1]
+    xc = (x - x.min()) / (x.max() - x.min())
+    surfaces = {}
+    for name, side in (('upper', raw_nodes[wall, 2] >= 0), ('lower', raw_nodes[wall, 2] < 0)):
+        rows = np.nonzero(side)[0]
+        rows = rows[np.argsort(xc[rows])]
+        surfaces[name] = (rows, xc[rows])
+    return surfaces
+
+
+def wall_shock(cp, mach, rows, xc):
+    """Return (x/c, steepness) of the shock on one surface, or (nan, 0) without a supersonic region."""
+    keep = (xc > 0.1) & (xc < 0.95)
+    x, values = xc[keep], cp[rows][keep]
+    if len(x) < 5 or values.min() >= cp_star(mach):
+        return float('nan'), 0.0
+    gradient = np.gradient(values, x)
+    gradient[~np.maximum.accumulate(values < cp_star(mach))] = 0.0
+    k = int(np.argmax(gradient))
+    return float(x[k]), float(gradient[k])
+
+
+def training_shocks(catalog, runs, wall, surfaces):
+    """Return the shock of every catalog entry per surface: (x/c, steepness), one row per entry."""
+    cache = {}
+    shocks = {name: np.zeros((len(runs), 2)) for name in surfaces}
+    for entry, run in enumerate(runs):
+        if run not in cache:
+            if not (Path(run) / 'postpro/PressureCoefficient.xpost').is_file():
+                raise RuntimeError('{} has no merged PressureCoefficient.xpost.'.format(run))
+            cache[run] = test.wall_pressure(Path(run), wall)
+        for name, (rows, xc) in surfaces.items():
+            shocks[name][entry] = wall_shock(cache[run], catalog[entry][0], rows, xc)
+    return shocks
+
+
+def shock_weights(catalog, point, shocks):
+    """Return IC weights over the training states with the shock structure predicted at the point.
+
+    Per surface, a cubic RBF of the shock steepness over all entries says whether the point has a
+    shock, and a cubic RBF of the position over the shocked entries says where; a position outside
+    the detector's 0.1 < x/c < 0.95 counts as no shock. With a predicted shock, the candidates are
+    the entries shocked on the surface of the steeper one, within the smallest window of its
+    position that holds SHOCK_NEIGHBORS of them (the nearest positions beyond the last window).
+    Without one, they are the entries with no shock on either surface. The weights interpolate
+    over the candidates only: Delaunay inside their hull, IDW outside (cluster_weights).
+    """
+    unit = test.unit_cube(catalog, catalog)
+    target = test.unit_cube(catalog, point)[None, :]
+    predicted = {}
+    for name, rows in shocks.items():
+        shocked = rows[:, 1] >= SHOCK_STRENGTH
+        steepness = scipy.interpolate.RBFInterpolator(unit, rows[:, 1], kernel='cubic', degree=1)(target)[0]
+        position = scipy.interpolate.RBFInterpolator(unit[shocked], rows[shocked, 0], kernel='cubic',
+                                                     degree=1)(target)[0]
+        predicted[name] = (float(position), float(steepness))
+    record = {'predicted': predicted}
+    surfaces = [name for name, (position, steepness) in predicted.items()
+                if steepness >= SHOCK_STRENGTH and 0.1 < position < 0.95]
+    if surfaces:
+        surface = max(surfaces, key=lambda name: predicted[name][1])
+        position = predicted[surface][0]
+        rows = shocks[surface]
+        shocked = np.nonzero(rows[:, 1] >= SHOCK_STRENGTH)[0]
+        gap = np.abs(rows[shocked, 0] - position)
+        window = next((w for w in SHOCK_WINDOWS if np.sum(gap <= w) >= SHOCK_NEIGHBORS), None)
+        if window is None:
+            window = float(np.sort(gap)[SHOCK_NEIGHBORS - 1])
+        inside = np.zeros(len(catalog), dtype=bool)
+        inside[shocked[gap <= window]] = True
+        record.update(structure='shock', surface=surface, position=position, window=window)
+    else:
+        inside = np.all([rows[:, 1] < SHOCK_STRENGTH for rows in shocks.values()], axis=0)
+        record.update(structure='no-shock')
+    weights, method = cluster_weights(catalog, point, inside)
+    record.update(method=method, candidates=int(inside.sum()),
+                  neighbors={int(entry): float(weights[entry]) for entry in np.nonzero(weights)[0]})
+    return weights, record
 
 def cluster_members(local, clusters):
     """Return the training HDM directories of every cluster's snapshots, overlap included."""
