@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # After the last restarts of a batch: accept the listed HDMs whose forces are stationary (if they
-# still miss HDMtol2), rebuild the global POD, evaluate it, then build and evaluate the local POD.
+# still miss HDMtol2), rebuild the global POD, evaluate it, then build and evaluate the local POD
+# (CLUSTERS = 0 skips the local POD).
 
 #SBATCH --job-name=naca5d_accept
 #SBATCH --partition=normal
@@ -34,10 +35,13 @@ prom=$(sbatch --parsable --dependency=afterok:${pod} --array=1-32%3 submit_sobol
     "${count}")
 metrics=$(sbatch --parsable --dependency=afterok:${pod},afterany:${prom} --time=08:00:00 \
     submit_sobol5d_metrics.sbatch "${count}")
-local=$(sbatch --parsable --dependency=afterok:${pod},afterany:${prom} submit_sobol5d_local.sbatch \
-    "${count}" "${clusters}" 20)
-sweep=$(sbatch --parsable --dependency=afterok:${local} --array=1-32%3 submit_sobol5d_sweep.sbatch \
-    "${count}" "local${clusters}_")
-local_metrics=$(sbatch --parsable --dependency=afterok:${local},afterany:${sweep} \
-    submit_sobol5d_sweep_metrics.sbatch "${count}" "local${clusters}_")
-echo "POD ${pod}, PROMs ${prom}, metrics ${metrics}; local POD ${local}, PROMs ${sweep}, metrics ${local_metrics}"
+echo "POD ${pod}, PROMs ${prom}, metrics ${metrics}"
+if (( clusters > 0 )); then
+    local=$(sbatch --parsable --dependency=afterok:${pod},afterany:${prom} submit_sobol5d_local.sbatch \
+        "${count}" "${clusters}" 20)
+    sweep=$(sbatch --parsable --dependency=afterok:${local} --array=1-32%3 submit_sobol5d_sweep.sbatch \
+        "${count}" "local${clusters}_")
+    local_metrics=$(sbatch --parsable --dependency=afterok:${local},afterany:${sweep} \
+        submit_sobol5d_sweep_metrics.sbatch "${count}" "local${clusters}_")
+    echo "local POD ${local}, PROMs ${sweep}, metrics ${local_metrics}"
+fi
