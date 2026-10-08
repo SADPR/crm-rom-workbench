@@ -39,11 +39,13 @@ STARTS = {
     'projection': 'orthogonal projection of the truth (reference, not a practical start)',
     'shock': ('Delaunay (IDW outside their hull) over the training states with the shock structure '
               'predicted at the point by cubic RBFs: shocked near the predicted position, or unshocked'),
+    'shock-cluster': ('the shock start over the training states of the cluster the PROM starts in, so the '
+                      'start lies in that local basis'),
 }
 FORMS = {'nondescriptor': 'NonDescriptor', 'descriptor': 'Descriptor', 'hybrid': 'Hybrid'}
 SWEEP_ITS = 5
 # Starts read from an external weights file (InterpICWeights).
-WEIGHTED_STARTS = ('delaunay', 'rbf', 'delaunay-cluster', 'shock')
+WEIGHTED_STARTS = ('delaunay', 'rbf', 'delaunay-cluster', 'shock', 'shock-cluster')
 # Fallback of the cluster start outside the hull of its cluster's parameters: as many
 # neighbors as a 5D simplex has vertices.
 CLUSTER_NEIGHBORS = 6
@@ -101,8 +103,9 @@ def initialize(count, name='sweep', points=POINTS, starts=tuple(STARTS), forms=t
             raise RuntimeError('Missing {}; build the clustered POD first.'.format(record))
         local = {'directory': str(Path(settings.MasterDir) / basis),
                  'clusters': json.loads(record.read_text())['clusters']}
-    if 'delaunay-cluster' in starts and local is None:
-        raise ValueError('The delaunay-cluster start needs a clustered --basis.')
+    for start in ('delaunay-cluster', 'shock-cluster'):
+        if start in starts and local is None:
+            raise ValueError('The {} start needs a clustered --basis.'.format(start))
     closure = None
     if galerkin and rbf is not None:
         raise ValueError('The PROM-RBF here is LSPG only; drop --galerkin or --rbf.')
@@ -133,21 +136,29 @@ def initialize(count, name='sweep', points=POINTS, starts=tuple(STARTS), forms=t
         if start not in WEIGHTED_STARTS:
             continue
         (root / 'weights' / start).mkdir(parents=True)
-        if start == 'delaunay-cluster':
+        if start in ('delaunay-cluster', 'shock-cluster'):
             directory = Path(local['directory'])
             runs_of = catalog_runs(pod)
             members = cluster_members(directory, local['clusters'])
             distances = read_clustered(directory / 'nonlinearrom/state.ucUicDist')
-        if start == 'shock':
+        if start in ('shock', 'shock-cluster'):
             raw_nodes = np.loadtxt('{}_nodes'.format(settings.TopFilePath), dtype=np.float64)
             wall = test.wall_nodes('{}.top'.format(settings.TopFilePath), raw_nodes)
-            shocks = training_shocks(catalog, catalog_runs(pod), wall, wall_surfaces(raw_nodes, wall))
+            frg = pyaeroopt.interface.Frg(
+                top='{}.top'.format(settings.TopFilePath),
+                geom_pre='{}data/{}'.format(settings.MasterDir, settings.GeometryPrefix),
+            )
+            shocks = training_shocks(catalog, catalog_runs(pod), wall, wall_surfaces(raw_nodes, wall), frg)
         for index in points:
             if start == 'delaunay-cluster':
                 weights, record = cluster_start(catalog, test_points[index - 1], runs_of, members, distances)
                 cluster_starts['{:03d}'.format(index)] = record
             elif start == 'shock':
                 weights, record = shock_weights(catalog, test_points[index - 1], shocks)
+                shock_starts['{:03d}'.format(index)] = record
+            elif start == 'shock-cluster':
+                weights, record = shock_cluster_start(catalog, test_points[index - 1], shocks, runs_of,
+                                                      members, distances)
                 shock_starts['{:03d}'.format(index)] = record
             else:
                 weights = test.interpolation_weights(start, catalog, test_points[index - 1])
@@ -182,13 +193,15 @@ def initialize(count, name='sweep', points=POINTS, starts=tuple(STARTS), forms=t
             index, record['cluster'], record['method'], record['consistent'],
             record['plain_delaunay_cluster']))
     for index, record in shock_starts.items():
+        where = '' if 'cluster' not in record else ' (cluster {}, consistent: {})'.format(
+            record['cluster'], record['consistent'])
         if record['structure'] == 'no-shock':
-            print('  point {}: no shock predicted; {} over the {} unshocked states'.format(
-                index, record['method'], record['candidates']))
+            print('  point {}: no shock predicted; {} over the {} unshocked states{}'.format(
+                index, record['method'], record['candidates'], where))
         else:
-            print('  point {}: {} shock predicted at x/c = {:.3f}; {} over the {} states within {:.3f}c'.format(
+            print('  point {}: {} shock predicted at x/c = {:.3f}; {} over the {} states within {:.3f}c{}'.format(
                 index, record['surface'], record['position'], record['method'], record['candidates'],
-                record['window']))
+                record['window'], where))
 
 
 def sweep_input(settings, count, run, root, iterations, basis=None, inner=None, rbf=None,
@@ -349,21 +362,24 @@ def wall_shock(cp, mach, rows, xc):
     return float(x[k]), float(gradient[k])
 
 
-def training_shocks(catalog, runs, wall, surfaces):
-    """Return the shock of every catalog entry per surface: (x/c, steepness), one row per entry."""
+def training_shocks(catalog, runs, wall, surfaces, frg):
+    """Return the shock of every catalog entry per surface: (x/c, steepness), one row per entry.
+
+    A training HDM whose surface Cp was never merged (an accepted restart, for instance) is merged
+    here; a restarted HDM's merged file holds its final state only.
+    """
     cache = {}
     shocks = {name: np.zeros((len(runs), 2)) for name in surfaces}
     for entry, run in enumerate(runs):
         if run not in cache:
-            if not (Path(run) / 'postpro/PressureCoefficient.xpost').is_file():
-                raise RuntimeError('{} has no merged PressureCoefficient.xpost.'.format(run))
+            test.merge_surface_fields(frg, Path(run), fields=('PressureCoefficient',))
             cache[run] = test.wall_pressure(Path(run), wall)
         for name, (rows, xc) in surfaces.items():
             shocks[name][entry] = wall_shock(cache[run], catalog[entry][0], rows, xc)
     return shocks
 
 
-def shock_weights(catalog, point, shocks):
+def shock_weights(catalog, point, shocks, allowed=None):
     """Return IC weights over the training states with the shock structure predicted at the point.
 
     Per surface, a cubic RBF of the shock steepness over all entries says whether the point has a
@@ -373,6 +389,8 @@ def shock_weights(catalog, point, shocks):
     position that holds SHOCK_NEIGHBORS of them (the nearest positions beyond the last window).
     Without one, they are the entries with no shock on either surface. The weights interpolate
     over the candidates only: Delaunay inside their hull, IDW outside (cluster_weights).
+    `allowed` restricts the candidates to some entries (a cluster's); without any left, the
+    weights are None.
     """
     unit = test.unit_cube(catalog, catalog)
     target = test.unit_cube(catalog, point)[None, :]
@@ -386,20 +404,26 @@ def shock_weights(catalog, point, shocks):
     record = {'predicted': predicted}
     surfaces = [name for name, (position, steepness) in predicted.items()
                 if steepness >= SHOCK_STRENGTH and 0.1 < position < 0.95]
+    if allowed is None:
+        allowed = np.ones(len(catalog), dtype=bool)
     if surfaces:
         surface = max(surfaces, key=lambda name: predicted[name][1])
         position = predicted[surface][0]
         rows = shocks[surface]
-        shocked = np.nonzero(rows[:, 1] >= SHOCK_STRENGTH)[0]
+        shocked = np.nonzero((rows[:, 1] >= SHOCK_STRENGTH) & allowed)[0]
+        if not len(shocked):
+            return None, record
         gap = np.abs(rows[shocked, 0] - position)
         window = next((w for w in SHOCK_WINDOWS if np.sum(gap <= w) >= SHOCK_NEIGHBORS), None)
         if window is None:
-            window = float(np.sort(gap)[SHOCK_NEIGHBORS - 1])
+            window = float(np.sort(gap)[min(SHOCK_NEIGHBORS, len(gap)) - 1])
         inside = np.zeros(len(catalog), dtype=bool)
         inside[shocked[gap <= window]] = True
         record.update(structure='shock', surface=surface, position=position, window=window)
     else:
-        inside = np.all([rows[:, 1] < SHOCK_STRENGTH for rows in shocks.values()], axis=0)
+        inside = np.all([rows[:, 1] < SHOCK_STRENGTH for rows in shocks.values()], axis=0) & allowed
+        if not inside.any():
+            return None, record
         record.update(structure='no-shock')
     weights, method = cluster_weights(catalog, point, inside)
     record.update(method=method, candidates=int(inside.sum()),
@@ -470,6 +494,30 @@ def cluster_start(catalog, point, runs, members, distances):
     return weights, {'cluster': int(order[0]), 'method': method, 'consistent': False,
                      'plain_delaunay_cluster': int(order[0])}
 
+
+def shock_cluster_start(catalog, point, shocks, runs, members, distances):
+    """Return shock-start weights whose states all belong to the cluster AERO-F will start in.
+
+    As cluster_start: the clusters are tried by their distance to the unrestricted shock start,
+    and one is kept when its restricted start still makes AERO-F pick it. A cluster with no state
+    of the predicted shock structure is skipped.
+    """
+    full, _ = shock_weights(catalog, point, shocks)
+    order = np.argsort([full @ distance @ full for distance in distances])
+    first = None
+    for cluster in order:
+        inside = np.array([run in members[cluster] for run in runs])
+        weights, record = shock_weights(catalog, point, shocks, inside)
+        if weights is None:
+            continue
+        record = dict(record, cluster=int(cluster), plain_shock_cluster=int(order[0]))
+        if starting_cluster(weights, distances) == cluster:
+            return weights, dict(record, consistent=True)
+        if first is None:
+            first = (weights, dict(record, consistent=False))
+    if first is None:
+        raise RuntimeError('No cluster holds a state of the predicted shock structure at {}.'.format(point))
+    return first
 
 def reduced_history(path):
     """Return (cluster, coordinates) per outer iteration; the basis size changes with clusters."""
