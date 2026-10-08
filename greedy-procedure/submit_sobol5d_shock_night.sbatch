@@ -12,7 +12,6 @@
 #SBATCH --partition=normal
 #SBATCH --ntasks=1
 #SBATCH --time=30:00:00
-#SBATCH --mem=16G
 #SBATCH --output=Sobol5DRuns/logs/night_%j.out
 #SBATCH --error=Sobol5DRuns/logs/night_%j.err
 
@@ -30,6 +29,10 @@ conda activate GreedyAEROF
 
 # The shock start merges a training HDM's wall Cp if nothing did before (an accepted restart).
 export SOWER=/home/groups/cfarhat/bin/sower
+# Jobs submitted from here inherit this job's environment. A memory request of this job left in
+# it (SLURM_MEM_PER_NODE) clashes with the PROM job's own (SLURM_MEM_PER_CPU), and srun refuses to
+# start AERO-F; that killed the first night (46973866).
+unset SLURM_MEM_PER_NODE SLURM_MEM_PER_CPU SLURM_MEM_PER_GPU
 
 # One sweep: init, its 32 PROMs, then its metrics. sbatch --wait returns when the whole array has
 # ended. A failed init is reported and the night moves on to the next sweep.
