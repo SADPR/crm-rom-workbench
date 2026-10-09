@@ -86,7 +86,8 @@ def initialize(count, name='sweep', points=POINTS, starts=tuple(STARTS), forms=t
     `basis` names a clustered reduction directory next to the global one (sobol5d_local.py);
     its PROMs keep the global IDW catalog, whose IC products that POD also computed.
     `inner` replaces the Gauss-Newton iterations per outer iteration (30 in runs.py).
-    `rbf` names a global RBF closure (sobol5d_rbf.py) that turns the PROM into a PROM-RBF.
+    `rbf` names an RBF closure (sobol5d_rbf.py) that turns the PROM into a PROM-RBF: a global one,
+    or, with `basis`, the local closures of that clustered POD.
     `galerkin` replaces LSPG with Galerkin projection, V^T R = 0, solved by Newton.
     """
     settings = campaign.configure_settings()
@@ -110,15 +111,7 @@ def initialize(count, name='sweep', points=POINTS, starts=tuple(STARTS), forms=t
     if galerkin and rbf is not None:
         raise ValueError('The PROM-RBF here is LSPG only; drop --galerkin or --rbf.')
     if rbf is not None:
-        if local is not None:
-            raise ValueError('The RBF closures here are global; drop --basis with --rbf.')
-        record = Path(settings.MasterDir) / rbf / 'rbf.json'
-        if not record.is_file():
-            raise RuntimeError('Missing {}; train the RBF closure first.'.format(record))
-        meta = json.loads(record.read_text())
-        closure = {'directory': str(Path(settings.MasterDir) / rbf),
-                   'primary_dimension': meta['primary_dimension'],
-                   'secondary_dimension': meta['secondary_dimension']}
+        closure = rbf_closure(settings, rbf, local)
     if 'projection' in starts:
         diagnostic = projection.diagnostic_dir(settings, count)
         if not (diagnostic / 'log.projection').is_file():
@@ -203,6 +196,27 @@ def initialize(count, name='sweep', points=POINTS, starts=tuple(STARTS), forms=t
                 index, record['surface'], record['position'], record['method'], record['candidates'],
                 record['window'], where))
 
+
+def rbf_closure(settings, rbf, local):
+    """Return the RBF closure record of a sweep: global, or local to the sweep's clustered basis.
+
+    AERO-F replaces the cluster0 component of a local closure's path with each cluster's own
+    directory, so a local sweep points it at .../cluster0.
+    """
+    record = Path(settings.MasterDir) / rbf / 'rbf.json'
+    if not record.is_file():
+        raise RuntimeError('Missing {}; train the RBF closure first.'.format(record))
+    meta = json.loads(record.read_text())
+    directory = Path(settings.MasterDir) / rbf
+    if 'clusters' in meta:
+        if local is None or meta['basis'] != local['directory']:
+            raise ValueError('{} holds local closures of {}; pass that POD with --basis.'.format(rbf, meta['basis']))
+        directory = directory / 'cluster0'
+    elif local is not None:
+        raise ValueError('{} is a global closure; drop --basis, or train local ones (sobol5d_rbf.py '
+                         'train-local).'.format(rbf))
+    return {'directory': str(directory), 'primary_dimension': meta['primary_dimension'],
+            'secondary_dimension': meta['secondary_dimension']}
 
 def sweep_input(settings, count, run, root, iterations, basis=None, inner=None, rbf=None,
                 galerkin=False):
@@ -714,7 +728,8 @@ def main():
     parser.add_argument('--forms', default=','.join(FORMS), help='for init, comma-separated')
     parser.add_argument('--its', type=int, default=SWEEP_ITS, help='for init, outer iterations')
     parser.add_argument('--inner', type=int, help='for init, Gauss-Newton iterations per outer one')
-    parser.add_argument('--rbf', help='for init, a global RBF closure directory, e.g. rbf256-n6')
+    parser.add_argument('--rbf', help='for init, an RBF closure directory, e.g. rbf256-n6, or with '
+                                      '--basis a local one, e.g. rbf256-c8-m10-n12')
     parser.add_argument('--basis', help='for init, a clustered reduction directory, e.g. reductionrun256-c4')
     parser.add_argument('--galerkin', action='store_true', help='for init, Galerkin instead of LSPG')
     args = parser.parse_args()
