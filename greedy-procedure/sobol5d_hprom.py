@@ -132,6 +132,34 @@ def prepare(count, cases=DEFAULT_CASES, name='hprom'):
         target, pod, len(selected), selected[0]['index'], selected[-1]['index']))
 
 
+def training_snapshot(target, case):
+    """Return the snapshot line ROWGEN reads for a case, staging a stage-3 restart's files first.
+
+    Training reads the snapshot's State.bin.dtdata, one line per frame, and aborts when the frame
+    has no line. A stage-3 restart appended its state as frame 3 of State.bin, .dt and .shift
+    (repaired by repair-stage3), but wrote one line of dtdata. For such a case the working copy
+    links the HDM's files read-only and writes a dtdata with one line per frame, repeating that
+    line: the spatial-only training does not use the time step.
+    """
+    path, start = case['snapshot'].split()[:2]
+    frame = int(start)
+    dtdata = Path(path + '.dtdata')
+    lines = [line for line in dtdata.read_text().splitlines() if line.strip()]
+    if len(lines) >= frame:
+        return case['snapshot']
+    if len(lines) != 1:
+        raise RuntimeError('{} has {} lines for frame {}; expected one.'.format(dtdata, len(lines), frame))
+    staged = target / 'trainingmatrix/snapshots{}'.format(case['index'])
+    if not staged.exists():
+        staged.mkdir()
+        source = Path(path).parent
+        for item in sorted(source.glob(Path(path).name + '*')):
+            if re.fullmatch(r'State\.bin(\.dt|\.shift)?\d{3}', item.name):
+                (staged / item.name).symlink_to(item.resolve())
+        (staged / dtdata.name).write_text((lines[0] + '\n') * frame)
+    return ' '.join([(staged / Path(path).name).as_posix()] + case['snapshot'].split()[1:])
+
+
 def rows_input(settings, target, case):
     """Write and return the ROWGEN input of one training case, patched for the working copy."""
     frg = pyaeroopt.interface.Frg(
@@ -147,7 +175,7 @@ def rows_input(settings, target, case):
     row.SuperDir = '{}/trainingmatrix/'.format(target.as_posix())
     row.SuperDirr = '{}/'.format(target.as_posix())
     (target / 'trainingmatrix/samplingsnapshots_rows{}.txt'.format(case['index'])).write_text(
-        '1\n{}\n'.format(case['snapshot']))
+        '1\n{}\n'.format(training_snapshot(target, case)))
     row.create_input_file()
     row.writeInputFile()
     path = target / 'trainingmatrix/input{}'.format(case['index'])
