@@ -1209,6 +1209,55 @@ Starting HPROM before the full PROM is accepted mixes basis/parametric error
 with hyper-reduction error. That makes negative results hard to interpret and
 positive results less defensible.
 
+### ECSW HPROM of POD 384 (started 2026-10-11)
+
+`sobol5d_hprom.py` wires Yihong's `runs.py` ECSW classes (`ROWGEN`, `CM`) into the
+campaign. The reference is the PROM it must reproduce, `shock5x5_384`: global POD 384,
+shock IC, 5 x 5, NonDescriptor (mean wall-Cp error 4.86%, 424 s on 5 nodes).
+
+- **Working copy.** `prepare` copies `reductionrun384/nonlinearrom` and the batch catalogs to
+  `Sobol5DRuns/hprom384/` (~15 GB). ECSW writes `hrmesh*` into its POD prefix, and the
+  rows and NNLS inputs set `ProjectInitialCondition = False`, so `reductionrun384` stays
+  frozen with its IC products.
+- **Training cases.** The first 32 Sobol design points after the box corners (design
+  33-64): 16 shocked, Mach 0.606-0.794, alpha +-1.88 deg. A maximin choice would have
+  taken the corners. Each case's snapshot and frame come from the batch's
+  `statesnapdata.txt` (design 37 is a stage-3 restart, frame 3).
+- **Rows** (`rows --case K`, 5 nodes per case). LSPG, Jacobian data, 30 residual components
+  (465 rows per case), `StackedTraining = SpatialOnly`, Laplace shift, the case's own
+  geometry and inlet.
+- **NNLS and mesh** (`mesh [--tolerance T]`, 5 nodes). Tolerance 1e-3 (HGV2), global
+  tolerance, decomposed boundary conditions, row scaling, `IncludeAllLiftDragFaces`. Then
+  partnmesh and sower of `hrmesh.top`, `dwall`, `rob` and `ref` for 24 ranks.
+- **HPROM** (`run --index i`, one node with 24 ranks). The reference PROM's input on the
+  reduced mesh, with the same IC weights and iterations. Position, wall distance and the
+  Laplace field are the truth HDM's, cut to `hrmesh.top.nodes`. Runs live in
+  `evaluate/hprom384/pointNNN`, not in `hromruns384`, which holds the PROM's full-mesh
+  shifts.
+- **Checks.** `postpro --index i` rebuilds the state on the full mesh from
+  `ReducedCoords.out` (5 nodes). `metrics` reads the wall Cp on the reduced mesh, compares
+  it with the HDM and the reference PROM (including the reduced coordinates), and gives the
+  speedup in wall time and in core-hours. The core-hours count the HPROM's 24 ranks against
+  the HDM's 120.
+- **Online-cost caveat.** In production, a new point's Laplace field needs a full-mesh FEniCS
+  solve, which is not counted here: the test HDMs' fields are reused.
+
+Stages, from `greedy-procedure/`:
+
+```bash
+prep=$(sbatch --parsable submit_sobol5d_hprom_prepare.sbatch 384)
+sbatch --dependency=afterok:${prep} --array=1 submit_sobol5d_hprom_rows.sbatch 384   # smoke test
+sbatch --array=2-32%3 submit_sobol5d_hprom_rows.sbatch 384
+sbatch submit_sobol5d_hprom_mesh.sbatch 384
+sbatch --array=31,19,5%3 submit_sobol5d_hprom.sbatch 384
+sbatch --array=31,19,5%3 submit_sobol5d_hprom_postpro.sbatch 384
+sbatch --array=1-4,6-18,20-30,32%3 submit_sobol5d_hprom.sbatch 384   # the other 29
+sbatch submit_sobol5d_hprom_metrics.sbatch 384
+```
+
+Success means a mean HPROM wall-Cp error at most 0.5 points above the reference PROM's,
+no new crashes, and a median reduced-coordinate distance to the PROM below 1%.
+
 ## 16. Unsteady work is later and has a different data model
 
 The requested eventual direction is unsteady RANS, not an implicit instruction
