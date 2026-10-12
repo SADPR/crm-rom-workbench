@@ -100,8 +100,12 @@ def read_record(target):
     return json.loads(record.read_text())
 
 
-def prepare(count, cases=DEFAULT_CASES, name='hprom'):
-    """Copy the batch's POD and catalogs, and freeze the training cases."""
+def prepare(count, cases=DEFAULT_CASES, name='hprom', rows_from=None):
+    """Copy the batch's POD and catalogs, and freeze the training cases.
+
+    With `rows_from` (another working directory's name), the training rows are that directory's:
+    they do not depend on the ECSW tolerance, and the NNLS only reads them.
+    """
     settings = campaign.configure_settings()
     pod = campaign.pod_dir(settings, count)
     target = hprom_dir(settings, count, name)
@@ -113,11 +117,26 @@ def prepare(count, cases=DEFAULT_CASES, name='hprom'):
         if not path.is_file():
             raise RuntimeError('Missing {}; build POD {} first.'.format(path, count))
     selected = training_cases(settings, pod, cases)
+    donor = None
+    if rows_from is not None:
+        donor = hprom_dir(settings, count, rows_from)
+        record = read_record(donor)
+        if ([case['index'] for case in record['cases']] != [case['index'] for case in selected]
+                or record['residual_components'] != RESIDUAL_COMPONENTS):
+            raise RuntimeError('{} was trained on other cases or components.'.format(donor))
+        missing = [case['index'] for case in selected
+                   if not list((donor / 'trainingmatrix/tr').glob('training.rows{}.*'.format(case['index'])))]
+        if missing:
+            raise RuntimeError('{} has no training rows for design points {}.'.format(donor, missing))
     staging.mkdir(parents=True)
     shutil.copytree(pod / 'nonlinearrom', staging / 'nonlinearrom')
     for name_ in ('parsoldata.txt', 'statesnapdata.txt'):
         shutil.copy2(pod / name_, staging / name_)
-    (staging / 'trainingmatrix/tr').mkdir(parents=True)
+    if donor is None:
+        (staging / 'trainingmatrix/tr').mkdir(parents=True)
+    else:
+        (staging / 'trainingmatrix').mkdir(parents=True)
+        (staging / 'trainingmatrix/tr').symlink_to((donor / 'trainingmatrix/tr').resolve())
     campaign.write_json(staging / 'hprom.json', {
         'pod': str(pod),
         'directory': str(target),
@@ -126,6 +145,7 @@ def prepare(count, cases=DEFAULT_CASES, name='hprom'):
         'rows_per_case': RESIDUAL_COMPONENTS * (RESIDUAL_COMPONENTS + 1) // 2,
         'selection': 'first {} Sobol design points after the box corners (design {}-{})'.format(
             cases, selected[0]['index'], selected[-1]['index']),
+        'rows_from': None if donor is None else str(donor),
     })
     staging.rename(target)
     print('Prepared {} from {} with {} training cases (design {}-{}).'.format(
@@ -202,6 +222,8 @@ def rows(count, case_number, name='hprom'):
     if not 1 <= case_number <= len(record['cases']):
         raise ValueError('--case must be in [1, {}].'.format(len(record['cases'])))
     case = record['cases'][case_number - 1]
+    if record.get('rows_from'):
+        raise RuntimeError('{} borrows the rows of {}; generate them there.'.format(target, record['rows_from']))
     output = target / 'trainingmatrix/tr'
     stem = 'training.rows{}.'.format(case['index'])
     if list(output.glob(stem + '*')):
@@ -533,12 +555,13 @@ def main():
     parser.add_argument('--name', default='hprom',
                         help='working directory Sobol5DRuns/NAMEnnn, runs in evaluate/NAMEnnn')
     parser.add_argument('--cases', type=int, default=DEFAULT_CASES, help='for prepare')
+    parser.add_argument('--rows-from', help='for prepare, reuse the rows of another working directory NAME')
     parser.add_argument('--case', type=int, help='for rows, 1-based')
     parser.add_argument('--tolerance', type=float, help='for mesh, the ECSW tolerance (setup.py: 1e-3)')
     parser.add_argument('--index', type=int, help='for run and postpro, the test point')
     args = parser.parse_args()
     if args.mode == 'prepare':
-        prepare(args.pod, args.cases, args.name)
+        prepare(args.pod, args.cases, args.name, args.rows_from)
     elif args.mode == 'rows':
         if args.case is None:
             raise ValueError('--case is required for rows.')

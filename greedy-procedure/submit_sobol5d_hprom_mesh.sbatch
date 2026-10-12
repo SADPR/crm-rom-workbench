@@ -14,8 +14,9 @@ set -euo pipefail
 
 work_dir=${SLURM_SUBMIT_DIR:?Submit this script from greedy-procedure/.}
 cd "${work_dir}"
-count=${1:?Usage: sbatch submit_sobol5d_hprom_mesh.sbatch COUNT [TOLERANCE]}
+count=${1:?Usage: sbatch submit_sobol5d_hprom_mesh.sbatch COUNT [TOLERANCE] [NAME]}
 tolerance=${2:-}
+name=${3:-hprom}
 
 [[ "${SLURM_NTASKS}" -eq 120 ]] || {
     echo "Expected 120 MPI tasks, received ${SLURM_NTASKS}." >&2
@@ -40,4 +41,4 @@ export MKL_NUM_THREADS=1
     exit 1
 }
 
-python3 -B sobol5d_hprom.py mesh --pod "${count}" ${tolerance:+--tolerance "${tolerance}"}
+python3 -B sobol5d_hprom.py mesh --pod "${count}" --name "${name}" ${tolerance:+--tolerance "${tolerance}"}

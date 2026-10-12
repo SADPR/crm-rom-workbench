@@ -12,9 +12,10 @@ set -euo pipefail
 
 work_dir=${SLURM_SUBMIT_DIR:?Submit this script from greedy-procedure/.}
 cd "${work_dir}"
-count=${1:?Usage: sbatch submit_sobol5d_hprom_metrics.sbatch COUNT}
+count=${1:?Usage: sbatch submit_sobol5d_hprom_metrics.sbatch COUNT [NAME]}
+name=${2:-hprom}
 
 source /scratch/users/sadpr/Code3Aug/miniconda3/etc/profile.d/conda.sh
 conda activate GreedyAEROF
 
-python3 -B sobol5d_hprom.py metrics --pod "${count}"
+python3 -B sobol5d_hprom.py metrics --pod "${count}" --name "${name}"

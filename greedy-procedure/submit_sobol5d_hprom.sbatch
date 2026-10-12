@@ -14,7 +14,8 @@ set -euo pipefail
 
 work_dir=${SLURM_SUBMIT_DIR:?Submit this script from greedy-procedure/.}
 cd "${work_dir}"
-count=${1:?Usage: sbatch --array=LIST%3 submit_sobol5d_hprom.sbatch COUNT}
+count=${1:?Usage: sbatch --array=LIST%3 submit_sobol5d_hprom.sbatch COUNT [NAME]}
+name=${2:-hprom}
 index=${SLURM_ARRAY_TASK_ID:?Submit this script as an array, even for one test point.}
 
 [[ "${SLURM_NTASKS}" -eq 24 ]] || {
@@ -40,4 +41,4 @@ export MKL_NUM_THREADS=1
     exit 1
 }
 
-python3 -B sobol5d_hprom.py run --pod "${count}" --index "${index}"
+python3 -B sobol5d_hprom.py run --pod "${count}" --index "${index}" --name "${name}"
