@@ -3,6 +3,9 @@
 # with a first argument "continue", carry an existing run (same --name) on from its restart
 # files with the given --dt and --max-time, e.g. after an impulsive start at a small dt:
 #   sbatch --array=137 submit_sobol5d_unsteady.sbatch continue --name unsteady-fs --dt 1e-4 --max-time 0.2
+# or, with "branch", repeat a phase of a run in a new folder from the restart that phase started from:
+#   sbatch --array=137 submit_sobol5d_unsteady.sbatch branch --name unsteady-cfl1000 --from unsteady-impulsive \
+#       --phase 1 --dual-cfl 1000 --max-time 0.006
 
 #SBATCH --job-name=naca5d_unst
 #SBATCH --partition=cfarhat
@@ -55,8 +58,8 @@ export MKL_NUM_THREADS=1
 } > "Sobol5DRuns/logs/unsteady_${SLURM_ARRAY_JOB_ID}_${index}.env"
 
 first=prepare
-if [[ "${1:-}" == continue ]]; then
-    first=continue
+if [[ "${1:-}" == continue || "${1:-}" == branch ]]; then
+    first=$1
     shift
 fi
 python3 -B sobol5d_unsteady.py "${first}" --run-index "${index}" "$@"

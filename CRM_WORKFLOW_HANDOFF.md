@@ -1458,6 +1458,28 @@ sbatch --dependency=afterok:${a} --array=137 submit_sobol5d_unsteady.sbatch cont
     --dt 1e-4 --max-time 0.2
 ```
 
+Result:
+
+- Phase 1 met the Newton tolerance at every step (~35 iterations).
+- At dt = 1e-4, no step does: 50 iterations reduce the residual only ~30×.
+- The shock forms aft (x/c 0.77 at 0.9 c/U), moves forward and settles at x/c 0.476-0.479 by 6 c/U. The steady HDM has it at 0.471.
+- At 9.3 c/U, when the run was stopped, the lift was 0.88 of the steady value.
+
+Two follow-ups:
+
+- **`branch`** repeats a phase in a new folder, from the restart files that phase started from (`references/phaseN/`, copied), with another dt, Newton count or `--dual-cfl`. It writes forces only. First use: does a larger dual-time CFL make Newton converge at dt = 1e-4?
+  ```bash
+  sbatch --array=137 submit_sobol5d_unsteady.sbatch branch --name unsteady-cfl1000 --from unsteady-impulsive \
+      --phase 1 --dual-cfl 1000 --max-time 0.006
+  ```
+- **`--adaptive --error-tol X --cfl0 C`** (prepare) lets AERO-F choose each step (`TimeStepAdaptation = ErrorEstimation`): one run, with no phases.
+  - The first step comes from `Cfl0` on the smallest cells.
+  - The next ones grow or shrink with an estimate of the time error, `||U_FE - U_n+1|| / ||U_n+1||`, against `ErrorTol`.
+  - Caveats seen in the code:
+    - a step repeated after a non-physical state keeps the same dt, because `dt_coeff` applies only to an imposed dt (`summary` counts `repeated_steps`);
+    - there is no maximum dt;
+    - the run cannot be continued, because the error estimate starts at zero after a restart.
+
 ## 17. Yihong's answers (2026-09-25) and open questions
 
 His answers:
