@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# Run one unsteady (URANS) HDM per array index, from the steady state of that training HDM.
+# Run one unsteady (URANS) HDM per array index, from the steady state of that training HDM, or,
+# with a first argument "continue", carry an existing run (same --name) on from its restart
+# files with the given --dt and --max-time, e.g. after an impulsive start at a small dt:
+#   sbatch --array=137 submit_sobol5d_unsteady.sbatch continue --name unsteady-fs --dt 1e-4 --max-time 0.2
 
 #SBATCH --job-name=naca5d_unst
 #SBATCH --partition=cfarhat
@@ -51,6 +54,11 @@ export MKL_NUM_THREADS=1
     module -t list 2>&1
 } > "Sobol5DRuns/logs/unsteady_${SLURM_ARRAY_JOB_ID}_${index}.env"
 
-python3 -B sobol5d_unsteady.py prepare --run-index "${index}" "$@"
+first=prepare
+if [[ "${1:-}" == continue ]]; then
+    first=continue
+    shift
+fi
+python3 -B sobol5d_unsteady.py "${first}" --run-index "${index}" "$@"
 python3 -B sobol5d_unsteady.py run --run-index "${index}" "$@"
 python3 -B sobol5d_unsteady.py summary --run-index "${index}" "$@"

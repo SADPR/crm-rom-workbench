@@ -14,6 +14,14 @@ so the physics and discretization stay those of the steady HDM. Only these chang
   --start freestream, the uniform inlet state, as stage 1 of the HDM starts (Solution = ""):
   an impulsive start, to follow the shock from its formation to its steady position.
 
+The impulsive start needs a first step of about 4e-8 s. AERO-F halves a step that leaves a
+non-physical state, at most 9 times (DistTimeState::updateDtCoeff), and doubles it back every
+3 steps, so only dt <= 2e-5 s starts on its own. The continue mode then carries a run on from its
+restart files, in the same folder, with another dt: BDF2 takes its coefficients from the ratio
+of the new step to the previous one (TimeData::computeCoefficients), and the restart holds both
+states and that step. Field frames are written every --field-interval of physical time
+(TimeInterval), so their numbering does not depend on dt or on the shortened steps.
+
 The transient mode follows the upper-surface shock frame by frame and compares the runs with
 the steady HDM.
 """
@@ -23,6 +31,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import time
 
 import numpy as np
@@ -44,6 +53,11 @@ DEFAULT_DUAL_CFL = 100.0
 SNAPSHOT_INTERVAL = 0.005
 FIELD_INTERVAL = 0.01
 DEFAULT_NAME = 'unsteady'
+# Restart files every this much physical time (s), on top of the final ones, so a run that fails
+# can be continued from close to where it stopped.
+RESTART_INTERVAL = 0.01
+# Iterations allowed beyond the nominal count, for the steps AERO-F shortens; MaxTime ends a run.
+EXTRA_STEPS = 100
 SPECTRUM_PADDING = 16
 # Output fields the unsteady test does not need; blanking them does not change the solve.
 UNUSED_OUTPUTS = ('FluxResidual = "FluxRes.bin";', 'Displacement = "Displacement.bin";')
@@ -93,7 +107,7 @@ def run_folder(name):
 
 
 def unsteady_input(directory, stage, dt, max_time, newton, dual_cfl, name=DEFAULT_NAME, start='steady',
-                   snapshot_interval=SNAPSHOT_INTERVAL, field_interval=FIELD_INTERVAL, line_search=0):
+                   snapshot_interval=SNAPSHOT_INTERVAL, field_interval=FIELD_INTERVAL):
     """Return the unsteady input built from the steady input of the given stage."""
     if start not in STARTS:
         raise ValueError('The start is one of {}.'.format(STARTS))
@@ -117,16 +131,11 @@ def unsteady_input(directory, stage, dt, max_time, newton, dual_cfl, name=DEFAUL
     dual = ('   DualTimeStepping = On;\n   DualTimeCfl = {:g};\n'.format(dual_cfl)) if dual_cfl > 0 else ''
     new_time = ('\nunder Time {{\n   Form = NonDescriptor;\n   Type = Implicit;\n   TypeTimeStep = Global;\n'
                 '   TimeStep = {:g};\n   MaxTime = {:g};\n   MaxIts = {};\n   Eps = 1e-14;\n'
-                .format(dt, max_time, int(round(max_time / dt)) + 10) + dual
+                .format(dt, max_time, int(round(max_time / dt)) + EXTRA_STEPS) + dual
                 + '   under Implicit {{\n      Type = ThreePointBackwardDifference;\n'
                 '      MatrixVectorProduct = FiniteDifference;\n      under Newton {{\n'
                 '         MaxIts = {};\n         FailSafe = AlwaysOn;\n         Eps = 0.001;\n'
                 .format(newton)
-                # Backtracking on each Newton update (contraction 0.5, sufficient decrease 0.25, the
-                # AERO-F defaults): it shortens a step that raises the residual, which the impulsive
-                # start needs, and changes neither the equations nor the converged step.
-                + ('         under LineSearch {{\n            MaxIts = {};\n         }}\n'.format(line_search)
-                   if line_search > 0 else '')
                 + linear.group(1) + '      }\n   }\n}\n')
     replacements = [
         ('Type = Steady;', 'Type = Unsteady;', 1),
@@ -134,13 +143,14 @@ def unsteady_input(directory, stage, dt, max_time, newton, dual_cfl, name=DEFAUL
         ('Solution = "{}references/Solution.bin";'.format(old),
          'Solution = "{}references/Solution.bin";'.format(here) if start == 'steady' else 'Solution = "";', 1),
         ('Prefix = "{}results/";'.format(old), 'Prefix = "{}results/";'.format(out), 1),
-        ('Prefix = "{}references/";'.format(old), 'Prefix = "{}references/";'.format(out), 1),
+        ('Prefix = "{}references/";'.format(old),
+         'Prefix = "{}references/";\n      TimeInterval = {:g};'.format(out, RESTART_INTERVAL), 1),
         ('Prefix = "{}{}/";'.format(old, snapshots[0]), 'Prefix = "{}snapshots/";'.format(out), 1),
         # The remaining references to the run directory are inputs that moved with it.
         (old, here, None),
         (time_block.group(0), new_time, 1),
-        ('   under Postpro {\n      Frequency = 0;', '   under Postpro {{\n      Frequency = {};'
-         .format(steps(field_interval, dt)), 1),
+        ('   under Postpro {\n      Frequency = 0;',
+         '   under Postpro {{\n      Frequency = 0;\n      TimeInterval = {:g};'.format(field_interval), 1),
         ('      StateVector = "State.bin";\n      Frequency = 0;',
          '      StateVector = "State.bin";\n      Frequency = {};'.format(steps(snapshot_interval, dt)), 1),
         ('OutputResidualSnapshotData = True;', 'OutputResidualSnapshotData = False;', 1),
@@ -154,7 +164,7 @@ def unsteady_input(directory, stage, dt, max_time, newton, dual_cfl, name=DEFAUL
 
 def prepare(index, dt=DEFAULT_DT, max_time=DEFAULT_MAX_TIME, newton=DEFAULT_NEWTON,
             dual_cfl=DEFAULT_DUAL_CFL, name=DEFAULT_NAME, start='steady',
-            snapshot_interval=SNAPSHOT_INTERVAL, field_interval=FIELD_INTERVAL, line_search=0):
+            snapshot_interval=SNAPSHOT_INTERVAL, field_interval=FIELD_INTERVAL):
     """Write the unsteady input of one converged or accepted training HDM."""
     settings = campaign.configure_settings()
     point = campaign.read_manifest()['points'][index - 1]
@@ -171,7 +181,7 @@ def prepare(index, dt=DEFAULT_DT, max_time=DEFAULT_MAX_TIME, newton=DEFAULT_NEWT
     if target.exists():
         raise RuntimeError('{} exists; refusing to overwrite an unsteady run.'.format(target))
     text = unsteady_input(directory, stage, dt, max_time, newton, dual_cfl, name, start,
-                          snapshot_interval, field_interval, line_search)
+                          snapshot_interval, field_interval)
     for folder in ('results', 'postpro', 'references', 'snapshots'):
         (target / folder).mkdir(parents=True)
     (target / 'input').write_text(text)
@@ -180,31 +190,124 @@ def prepare(index, dt=DEFAULT_DT, max_time=DEFAULT_MAX_TIME, newton=DEFAULT_NEWT
         'start': str(solution.parent / 'Solution.bin') if start == 'steady' else 'freestream (uniform inlet state)',
         'template': 'input{}'.format(stage),
         'snapshot_interval': snapshot_interval, 'field_interval': field_interval,
-        'line_search_iterations': line_search,
         'name': name, 'time_step': dt, 'max_time': max_time, 'newton_iterations': newton,
         'dual_time_cfl': dual_cfl if dual_cfl > 0 else None,
         'convective_time': 1.0 / (point[0] * SPEED_OF_SOUND),
+        'phases': [{'input': 'input', 'log': 'log', 'start_iteration': 0, 'start_time': 0.0,
+                    'time_step': dt, 'max_time': max_time, 'newton_iterations': newton}],
     })
     print('Prepared {} from input{} ({} steady state), starting from {}.'.format(
         target / 'input', stage, state, 'that state' if start == 'steady' else 'the uniform inlet state'))
 
 
-def run(index, name=DEFAULT_NAME):
-    """Run one prepared unsteady HDM."""
+def run_phases(meta):
+    """Return the phases of a run; runs prepared before the continue mode have one."""
+    return meta.get('phases') or [{'input': 'input', 'log': 'log', 'start_iteration': 0, 'start_time': 0.0,
+                                   'time_step': meta['time_step'], 'max_time': meta['max_time']}]
+
+
+def restart_parameters(path):
+    """Return the iteration, time and last time step of an AERO-F Restart.data file."""
+    text = path.read_text()
+    values = [re.findall(r'\n\s*{} = (\S+);'.format(key), text) for key in ('Iteration', 'Time', 'TimeStep1')]
+    if any(len(value) != 1 for value in values):
+        raise RuntimeError('Unexpected restart parameters in {}.'.format(path))
+    return int(values[0][0]), float(values[1][0]), float(values[2][0])
+
+
+def continue_input(text, out, iteration, start_time, dt, max_time, newton, snapshot_interval, source):
+    """Return the input of a phase that carries a run on from its restart files with another dt."""
+    inputs = re.search(r'\nunder Input \{\n.*?\n\}\n', text, re.S)
+    if not inputs or 'TimeInterval' not in re.search(r'under Postpro \{.*?\}', text, re.S).group(0):
+        # Step-numbered field frames would not line up once dt changes.
+        raise RuntimeError('{} writes fields by step count; it cannot be continued.'.format(source))
+    block, restarts = re.subn(r'\n   RestartData = "[^"]*";',
+                              '\n   RestartData = "{}references/Restart.data";'.format(out), inputs.group(0))
+    block, solutions = re.subn(r'\n   Solution = "[^"]*";', '\n   Solution = "{}references/Solution.bin";'.format(out),
+                               block)
+    if (restarts, solutions) != (1, 1):
+        raise RuntimeError('Unexpected Input block in {}.'.format(source))
+    max_its = iteration + int(round((max_time - start_time) / dt)) + EXTRA_STEPS
+    return projection.patch(text, [
+        (inputs.group(0), block, 1),
+        (re.search(r'\n   TimeStep = [^;]+;\n   MaxTime = [^;]+;\n   MaxIts = \d+;\n', text).group(0),
+         '\n   TimeStep = {:g};\n   MaxTime = {:g};\n   MaxIts = {};\n'.format(dt, max_time, max_its), 1),
+        (re.search(r'under Newton \{\n         MaxIts = \d+;', text).group(0),
+         'under Newton {{\n         MaxIts = {};'.format(newton), 1),
+        (re.search(r'StateVector = "State.bin";\n      Frequency = \d+;', text).group(0),
+         'StateVector = "State.bin";\n      Frequency = {};'.format(steps(snapshot_interval, dt)), 1),
+    ], source)
+
+
+def continue_run(index, name, dt, max_time, newton=None, snapshot_interval=None):
+    """Write the input of a new phase of an unsteady run, from where its last phase stopped.
+
+    The Newton iterations and the snapshot interval stay those of the last phase unless given."""
     settings = campaign.configure_settings()
     target = hdm_directory(settings, index) / run_folder(name)
-    if not (target / 'input').is_file():
+    meta = json.loads((target / 'unsteady.json').read_text())
+    phases = run_phases(meta)
+    newton = newton or phases[-1].get('newton_iterations', meta['newton_iterations'])
+    snapshot_interval = snapshot_interval or phases[-1].get('snapshot_interval', meta['snapshot_interval'])
+    log, restart = target / phases[-1]['log'], target / 'references/Restart.data'
+    if not log.is_file():
+        raise RuntimeError('Phase {} of {} has not run yet.'.format(len(phases) - 1, target))
+    # AERO-F writes the restart files when a run ends, at MaxTime or on SIGUSR1; a run that
+    # failed leaves the last periodic ones, which may be far behind.
+    if not restart.is_file() or restart.stat().st_mtime < log.stat().st_mtime - 600:
+        raise RuntimeError('{} was not written at the end of {}; inspect that log.'.format(restart, log))
+    iteration, start_time, last_dt = restart_parameters(restart)
+    if start_time >= max_time:
+        raise RuntimeError('{} already reached t = {:g} s.'.format(target, start_time))
+    for interval in (snapshot_interval, meta['field_interval']):
+        if abs(interval / dt - round(interval / dt)) > 1e-9:
+            raise ValueError('The output interval {:g} s is not a multiple of dt = {:g} s.'.format(interval, dt))
+    phase = len(phases)
+    # The restart files are overwritten by the new phase; keep the ones it starts from.
+    backup = target / 'references/phase{}'.format(phase)
+    backup.mkdir()
+    for path in [restart] + sorted((target / 'references').glob('Solution.bin[0-9]*')):
+        shutil.copy2(path, backup / path.name)
+    source = target / phases[-1]['input']
+    text = continue_input(source.read_text(), '{}/'.format(target.as_posix()), iteration, start_time, dt,
+                          max_time, newton, snapshot_interval, source)
+    phases.append({'input': 'input.{}'.format(phase), 'log': 'log.{}'.format(phase),
+                   'start_iteration': iteration, 'start_time': start_time, 'time_step': dt,
+                   'max_time': max_time, 'newton_iterations': newton, 'snapshot_interval': snapshot_interval})
+    (target / phases[-1]['input']).write_text(text)
+    meta['phases'] = phases
+    campaign.write_json(target / 'unsteady.json', meta)
+    print('Prepared {}: from iteration {} at t = {:g} s (last step {:g} s) with dt = {:g} s to t = {:g} s; '
+          'the first step is {:.2f} times the last one.'.format(
+              target / phases[-1]['input'], iteration, start_time, last_dt, dt, max_time, dt / last_dt))
+
+
+def run(index, name=DEFAULT_NAME):
+    """Run the last prepared phase of one unsteady HDM."""
+    settings = campaign.configure_settings()
+    target = hdm_directory(settings, index) / run_folder(name)
+    if not (target / 'unsteady.json').is_file():
         raise RuntimeError('Run the prepare action first.')
-    if (target / 'log').exists():
-        raise RuntimeError('{} exists; refusing to rerun.'.format(target / 'log'))
-    projection.run_aerof(settings, target / 'input', target / 'log')
-    print('Completed the unsteady run of HDM {:03d}.'.format(index))
+    phase = run_phases(json.loads((target / 'unsteady.json').read_text()))[-1]
+    if (target / phase['log']).exists():
+        raise RuntimeError('{} exists; refusing to rerun.'.format(target / phase['log']))
+    projection.run_aerof(settings, target / phase['input'], target / phase['log'])
+    print('Completed {} of the unsteady run of HDM {:03d}.'.format(phase['input'], index))
 
 
-def step_convergence(log, tolerance=1.0e-3):
+def forces_history(path):
+    """Return the lift-and-drag rows of a run, one per time: a restart rewrites its first row."""
+    rows = projection.table(path)
+    keep = np.append(rows[1:, 1] > rows[:-1, 1], True)
+    return rows[keep]
+
+
+def step_convergence(logs, tolerance=1.0e-3):
     """Return the Newton iterations per time step and how far the steps that missed the tolerance fell."""
-    text = log.read_text()
-    newton = [int(value) for value in re.findall(r'^It \d+ \(\d+,(\d+)\):', text, re.M)][1:]
+    texts = [log.read_text() for log in logs if log.is_file()]
+    # Each log opens with the line of its starting state, which takes no Newton iteration.
+    newton = [int(value) for text in texts for value in re.findall(r'^It \d+ \(\d+,(\d+)\):', text, re.M)[1:]]
+    text = ''.join(texts)
     missed = [float(reached) / float(initial) for initial, reached in re.findall(
         r'Newton solver reached \d+ its \(Residual: initial=(\S+), reached=(\S+),', text)]
     return {
@@ -223,7 +326,7 @@ def summary(index, name=DEFAULT_NAME):
     directory = hdm_directory(settings, index)
     target = directory / run_folder(name)
     meta = json.loads((target / 'unsteady.json').read_text())
-    rows = projection.table(target / 'postpro/liftdrag.out')
+    rows = forces_history(target / 'postpro/liftdrag.out')
     steady = projection.table(directory / 'postpro/liftdrag.out')[-1]
     time, drag, lift = rows[:, 1], rows[:, 4], rows[:, 5]
     late = time >= 0.5 * time[-1]
@@ -249,12 +352,22 @@ def summary(index, name=DEFAULT_NAME):
             'peak_frequency_hz': float(frequencies[peak]) if peak else None,
             'peak_strouhal': float(frequencies[peak] * meta['convective_time']) if peak else None,
         }
-    # The step must be the imposed one everywhere; the history prints seven significant digits.
-    deviation = float(np.max(np.abs(np.diff(time) - meta['time_step'])) / meta['time_step'])
+    # Steps AERO-F shortened after a non-physical state, per phase; the history prints seven
+    # significant digits, so a step within 1% of the imposed one is that step, and a phase owns
+    # the steps that end 1e-3 of its dt after its start (its shortest step is dt / 512).
+    phases, steps_taken = run_phases(meta), np.diff(time)
+    starts = [phase['start_time'] + 1e-3 * phase['time_step'] for phase in phases]
+    owner = np.searchsorted(starts, time[1:], side='left') - 1
+    time_steps = []
+    for number, phase in enumerate(phases):
+        mine = steps_taken[owner == number]
+        short = mine < 0.99 * phase['time_step']
+        time_steps.append({'time_step': phase['time_step'], 'steps': int(len(mine)),
+                           'shortened_steps': int(short.sum()), 'time_in_shortened_steps': float(mine[short].sum())})
     result = {'index': index, 'time': float(time[-1]),
               'convective_times': float(time[-1] / meta['convective_time']),
-              'time_step_max_deviation': deviation,
-              'convergence': step_convergence(target / 'log'), **values}
+              'time_steps': time_steps,
+              'convergence': step_convergence([target / phase['log'] for phase in phases]), **values}
     campaign.write_json(target / 'summary.json', result)
     print(json.dumps(result, indent=1))
 
@@ -468,11 +581,11 @@ def transient(index, names):
         tc = meta['convective_time']
         times, frames = xpost_history(target / 'exo/PressureCoefficient.xpost', wall)
         shocks = np.array([shock_position(frame[upper], x, mach) or np.nan for frame in frames])
-        forces = projection.table(target / 'postpro/liftdrag.out')
+        forces = forces_history(target / 'postpro/liftdrag.out')
         lift_time, lift, drag = forces[:, 1], forces[:, 5], forces[:, 4]
         histories[name] = (times, shocks, lift_time, lift)
         runs[name] = {
-            'start': meta['start'], 'time_step': meta['time_step'],
+            'start': meta['start'], 'time_steps': [phase['time_step'] for phase in run_phases(meta)],
             'convective_time': tc, 'frames': len(times), 'final_time': float(lift_time[-1]),
             'shock_history': [[float(t), float(t / tc), None if np.isnan(s) else float(s)] for t, s in zip(times, shocks)],
             'settled_shock_time': settling_time(times, shocks, steady_shock, SETTLED_SHOCK, False),
@@ -522,28 +635,30 @@ def main():
     """Run one explicit stage of an unsteady HDM."""
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('mode', choices=('prepare', 'run', 'summary', 'exo', 'resteady', 'transient'))
+    parser.add_argument('mode', choices=('prepare', 'continue', 'run', 'summary', 'exo', 'resteady', 'transient'))
     parser.add_argument('--run-index', type=int, required=True)
     parser.add_argument('--dt', type=float, default=DEFAULT_DT, help='physical time step (s)')
     parser.add_argument('--max-time', type=float, default=DEFAULT_MAX_TIME, help='physical time (s)')
-    parser.add_argument('--newton', type=int, default=DEFAULT_NEWTON, help='Newton iterations per step')
+    parser.add_argument('--newton', type=int,
+                        help='Newton iterations per step (default {}; continue keeps the run\'s)'.format(DEFAULT_NEWTON))
     parser.add_argument('--name', default=DEFAULT_NAME,
                         help='run folder below HDMrunNNN/, starting with "unsteady" (e.g. unsteady-dt5e-5)')
     parser.add_argument('--dual-cfl', type=float, default=DEFAULT_DUAL_CFL,
                         help='pseudo-time CFL of dual time stepping; 0 turns it off')
     parser.add_argument('--start', choices=STARTS, default='steady',
                         help='steady state at t = 0, or the uniform inlet state (an impulsive start)')
-    parser.add_argument('--snapshot-interval', type=float, default=SNAPSHOT_INTERVAL,
-                        help='physical time between state snapshots (s), a multiple of dt')
+    parser.add_argument('--snapshot-interval', type=float,
+                        help='physical time between state snapshots (s), a multiple of dt '
+                             '(default {:g}; continue keeps the run\'s)'.format(SNAPSHOT_INTERVAL))
     parser.add_argument('--field-interval', type=float, default=FIELD_INTERVAL,
                         help='physical time between field outputs (s), a multiple of dt')
     parser.add_argument('--names', help='for transient, comma-separated run folders (default: --name)')
-    parser.add_argument('--line-search', type=int, default=0,
-                        help='backtracking steps per Newton update (0: none, the default)')
     args = parser.parse_args()
     if args.mode == 'prepare':
-        prepare(args.run_index, args.dt, args.max_time, args.newton, args.dual_cfl, args.name, args.start,
-                args.snapshot_interval, args.field_interval, args.line_search)
+        prepare(args.run_index, args.dt, args.max_time, args.newton or DEFAULT_NEWTON, args.dual_cfl, args.name,
+                args.start, args.snapshot_interval or SNAPSHOT_INTERVAL, args.field_interval)
+    elif args.mode == 'continue':
+        continue_run(args.run_index, args.name, args.dt, args.max_time, args.newton, args.snapshot_interval)
     elif args.mode == 'transient':
         transient(args.run_index, (args.names or args.name).split(','))
     elif args.mode == 'run':

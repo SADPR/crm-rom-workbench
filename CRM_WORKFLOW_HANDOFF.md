@@ -1418,6 +1418,46 @@ half written. Rerun it later to include the new frames; it replaces the earlier 
 A steady case shows a small amplitude and slope. A buffeting case shows a sustained amplitude
 at St ≈ 0.05-0.1.
 
+### Impulsive start of HDM 137 (shock formation and transport)
+
+`--start freestream` starts from the uniform inlet state (`Solution = ""`, as stage 1 of the
+HDM does), to see the shock form and travel to its steady position (x/c = 0.471 on HDM 137).
+
+What the first step needs (tests of 2026-10-12, max time 1e-4 to 1e-3 s):
+
+- **dt = 1e-4, 2e-4 and 2.5e-5 s** (dual CFL 100, 30 Newton iterations) abort at step 1:
+  "Cannot further reduce time-step".
+  - Each non-physical state (negative density or pressure near the leading edge) halves the
+    step (`DistTimeState::updateDtCoeff`).
+  - AERO-F allows at most 9 halvings (`dt_coeff >= 0.001`).
+- **Dual CFL 1 or 5** survives step 1, but the Newton residual stops falling after it.
+- **The Newton line search** (`under LineSearch`) crashes AERO-F 069ef9d8 (SIGFPE) in the first
+  iteration: it evaluates the residual at the trial state before checking that it is physical.
+- **dt = 1e-5 s works.**
+  - The first step is cut 8 times, to 3.9e-8 s.
+  - Every step then meets the 1e-3 Newton tolerance in 3-14 iterations.
+  - The step doubles back every 3 steps.
+
+So the largest dt that starts on its own is 2e-5 s (2e-5 / 512 = 3.9e-8 s).
+
+The run then goes on with `continue`, in the same folder, at the dt of the study:
+
+- BDF2 takes its coefficients from the ratio of the new step to the old one
+  (`TimeData::computeCoefficients`).
+- The restart files hold both states and the old step.
+- Field frames are written every `--field-interval` of physical time (Postpro `TimeInterval`),
+  so their numbering does not depend on dt or on the shortened steps.
+- Restart files are also written every 0.01 s.
+- Each phase has its own `input.N` and `log.N`, and the restart it started from is kept in
+  `references/phaseN/`.
+
+```bash
+a=$(sbatch --parsable --array=137 submit_sobol5d_unsteady.sbatch --start freestream --name unsteady-impulsive \
+    --dt 2e-5 --max-time 0.004 --newton 50 --snapshot-interval 0.001 --field-interval 0.002)
+sbatch --dependency=afterok:${a} --array=137 submit_sobol5d_unsteady.sbatch continue --name unsteady-impulsive \
+    --dt 1e-4 --max-time 0.2
+```
+
 ## 17. Yihong's answers (2026-09-25) and open questions
 
 His answers:
