@@ -55,6 +55,8 @@ DEFAULT_MAX_TIME = 0.3
 # residual fell by only 2-10 of the required 1000.
 DEFAULT_NEWTON = 30
 DEFAULT_DUAL_CFL = 100.0
+# Newton stops a step once its residual falls by this factor (relative to the step's first one).
+DEFAULT_NEWTON_TOL = 1.0e-3
 # Output intervals in physical time, so runs with different dt write at the same instants
 # (every 50 and 100 steps at the default dt).
 SNAPSHOT_INTERVAL = 0.005
@@ -120,7 +122,8 @@ def run_folder(name):
 
 
 def unsteady_input(directory, stage, dt, max_time, newton, dual_cfl, name=DEFAULT_NAME, start='steady',
-                   snapshot_interval=SNAPSHOT_INTERVAL, field_interval=FIELD_INTERVAL, adaptive=None):
+                   snapshot_interval=SNAPSHOT_INTERVAL, field_interval=FIELD_INTERVAL, adaptive=None,
+                   newton_tol=DEFAULT_NEWTON_TOL):
     """Return the unsteady input built from the steady input of the given stage.
 
     adaptive, if given, holds error_tol, cfl0 and cfl_min, and replaces the fixed dt."""
@@ -159,8 +162,8 @@ def unsteady_input(directory, stage, dt, max_time, newton, dual_cfl, name=DEFAUL
                 + stepping + dual
                 + '   under Implicit {{\n      Type = ThreePointBackwardDifference;\n'
                 '      MatrixVectorProduct = FiniteDifference;\n      under Newton {{\n'
-                '         MaxIts = {};\n         FailSafe = AlwaysOn;\n         Eps = 0.001;\n'
-                .format(newton)
+                '         MaxIts = {};\n         FailSafe = AlwaysOn;\n         Eps = {:g};\n'
+                .format(newton, newton_tol)
                 + linear.group(1) + '      }\n   }\n}\n')
     replacements = [
         ('Type = Steady;', 'Type = Unsteady;', 1),
@@ -191,7 +194,8 @@ def unsteady_input(directory, stage, dt, max_time, newton, dual_cfl, name=DEFAUL
 
 def prepare(index, dt=DEFAULT_DT, max_time=DEFAULT_MAX_TIME, newton=DEFAULT_NEWTON,
             dual_cfl=DEFAULT_DUAL_CFL, name=DEFAULT_NAME, start='steady',
-            snapshot_interval=SNAPSHOT_INTERVAL, field_interval=FIELD_INTERVAL, adaptive=None):
+            snapshot_interval=SNAPSHOT_INTERVAL, field_interval=FIELD_INTERVAL, adaptive=None,
+            newton_tol=DEFAULT_NEWTON_TOL):
     """Write the unsteady input of one converged or accepted training HDM."""
     settings = campaign.configure_settings()
     point = campaign.read_manifest()['points'][index - 1]
@@ -208,7 +212,7 @@ def prepare(index, dt=DEFAULT_DT, max_time=DEFAULT_MAX_TIME, newton=DEFAULT_NEWT
     if target.exists():
         raise RuntimeError('{} exists; refusing to overwrite an unsteady run.'.format(target))
     text = unsteady_input(directory, stage, dt, max_time, newton, dual_cfl, name, start,
-                          snapshot_interval, field_interval, adaptive)
+                          snapshot_interval, field_interval, adaptive, newton_tol)
     dt = None if adaptive else dt
     for folder in ('results', 'postpro', 'references', 'snapshots'):
         (target / folder).mkdir(parents=True)
@@ -220,7 +224,7 @@ def prepare(index, dt=DEFAULT_DT, max_time=DEFAULT_MAX_TIME, newton=DEFAULT_NEWT
         'snapshot_interval': None if adaptive else snapshot_interval, 'field_interval': field_interval,
         'adaptive': adaptive,
         'name': name, 'time_step': dt, 'max_time': max_time, 'newton_iterations': newton,
-        'dual_time_cfl': dual_cfl if dual_cfl > 0 else None,
+        'newton_tolerance': newton_tol, 'dual_time_cfl': dual_cfl if dual_cfl > 0 else None,
         'convective_time': 1.0 / (point[0] * SPEED_OF_SOUND),
         'phases': [{'input': 'input', 'log': 'log', 'start_iteration': 0, 'start_time': 0.0,
                     'time_step': dt, 'max_time': max_time, 'newton_iterations': newton}],
@@ -314,9 +318,9 @@ def continue_run(index, name, dt, max_time, newton=None, snapshot_interval=None)
               target / phases[-1]['input'], iteration, start_time, last_dt, dt, max_time, dt / last_dt))
 
 
-def branch_run(index, name, source, phase, max_time, dt=None, newton=None, dual_cfl=None):
+def branch_run(index, name, source, phase, max_time, dt=None, newton=None, dual_cfl=None, newton_tol=None):
     """Write a new run that repeats phase `phase` of run `source` from the restart files that phase
-    started from, with another dt, Newton count or dual-time CFL; it writes forces only."""
+    started from, with another dt, Newton count or tolerance, or dual-time CFL; it writes forces only."""
     settings = campaign.configure_settings()
     directory = hdm_directory(settings, index)
     origin, target = directory / run_folder(source), directory / run_folder(name)
@@ -342,6 +346,10 @@ def branch_run(index, name, source, phase, max_time, dt=None, newton=None, dual_
     if dual_cfl is not None:
         replacements.append((re.search(r'\n   DualTimeCfl = [^;]+;', text).group(0),
                              '\n   DualTimeCfl = {:g};'.format(dual_cfl), 1))
+    newton_block = re.search(r'(under Newton \{\n         MaxIts = \d+;\n         FailSafe = AlwaysOn;\n         Eps = )([^;]+);',
+                             text)
+    if newton_tol is not None:
+        replacements.append((newton_block.group(0), '{}{:g};'.format(newton_block.group(1), newton_tol), 1))
     text = projection.patch(text, replacements, template)
     for folder in ('results', 'postpro', 'references', 'snapshots'):
         (target / folder).mkdir(parents=True)
@@ -349,16 +357,18 @@ def branch_run(index, name, source, phase, max_time, dt=None, newton=None, dual_
         shutil.copy2(path, target / 'references' / path.name)
     (target / 'input').write_text(text)
     dual_cfl = dual_cfl if dual_cfl is not None else float(re.search(r'\n   DualTimeCfl = ([^;]+);', text).group(1))
+    newton_tol = newton_tol if newton_tol is not None else float(newton_block.group(2))
     meta.update(name=name, time_step=dt, max_time=max_time, newton_iterations=newton, dual_time_cfl=dual_cfl,
+                newton_tolerance=newton_tol,
                 branched_from={'run': source, 'phase': phase, 'iteration': iteration, 'time': start_time},
                 fields=False,
                 phases=[{'input': 'input', 'log': 'log', 'start_iteration': iteration, 'start_time': start_time,
                          'time_step': dt, 'max_time': max_time, 'newton_iterations': newton,
-                         'dual_time_cfl': dual_cfl}])
+                         'newton_tolerance': newton_tol, 'dual_time_cfl': dual_cfl}])
     campaign.write_json(target / 'unsteady.json', meta)
     print('Prepared {}: phase {} of {} again, from iteration {} at t = {:g} s, with dt = {:g} s to t = {:g} s, '
-          '{} Newton iterations and dual-time CFL {:g} (forces only).'.format(
-              target / 'input', phase, source, iteration, start_time, dt, max_time, newton, dual_cfl))
+          '{} Newton iterations to {:g}, and dual-time CFL {:g} (forces only).'.format(
+              target / 'input', phase, source, iteration, start_time, dt, max_time, newton, newton_tol, dual_cfl))
 
 
 def run(index, name=DEFAULT_NAME):
@@ -458,7 +468,7 @@ def summary(index, name=DEFAULT_NAME):
               'time_steps': time_steps,
               # A step AERO-F redoes after a non-physical state; in an adaptive run it redoes it with the same dt.
               'repeated_steps': sum(log.read_text().count('Repeating time-step') for log in logs if log.is_file()),
-              'convergence': step_convergence(logs), **values}
+              'convergence': step_convergence(logs, meta.get('newton_tolerance') or DEFAULT_NEWTON_TOL), **values}
     campaign.write_json(target / 'summary.json', result)
     print(json.dumps(result, indent=1))
 
@@ -752,6 +762,9 @@ def main():
     parser.add_argument('--adaptive', action='store_true',
                         help='for prepare, let AERO-F choose each step from an estimate of the time error')
     parser.add_argument('--error-tol', type=float, help='for --adaptive, the time-error tolerance (ErrorTol)')
+    parser.add_argument('--newton-tol', type=float,
+                        help='relative Newton tolerance per step (default {:g}; branch keeps the phase\'s)'.format(
+                            DEFAULT_NEWTON_TOL))
     parser.add_argument('--cfl0', type=float, default=1.0, help='for --adaptive, the CFL of the first step')
     parser.add_argument('--cfl-min', type=float, help='for --adaptive, the CFL of the smallest step (default cfl0/100)')
     args = parser.parse_args()
@@ -764,7 +777,8 @@ def main():
             adaptive = {'error_tol': args.error_tol, 'cfl0': args.cfl0,
                         'cfl_min': args.cfl_min if args.cfl_min else args.cfl0 / 100.0}
         prepare(args.run_index, args.dt or DEFAULT_DT, args.max_time, args.newton or DEFAULT_NEWTON, dual_cfl,
-                args.name, args.start, args.snapshot_interval or SNAPSHOT_INTERVAL, args.field_interval, adaptive)
+                args.name, args.start, args.snapshot_interval or SNAPSHOT_INTERVAL, args.field_interval, adaptive,
+                args.newton_tol or DEFAULT_NEWTON_TOL)
     elif args.mode == 'continue':
         continue_run(args.run_index, args.name, args.dt or DEFAULT_DT, args.max_time, args.newton,
                      args.snapshot_interval)
@@ -772,7 +786,7 @@ def main():
         if not args.source:
             parser.error('branch needs --from')
         branch_run(args.run_index, args.name, args.source, args.phase, args.max_time, args.dt, args.newton,
-                   args.dual_cfl)
+                   args.dual_cfl, args.newton_tol)
     elif args.mode == 'transient':
         transient(args.run_index, (args.names or args.name).split(','))
     elif args.mode == 'run':
