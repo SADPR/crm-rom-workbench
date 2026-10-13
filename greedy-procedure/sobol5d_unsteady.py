@@ -93,7 +93,7 @@ def run_folder(name):
 
 
 def unsteady_input(directory, stage, dt, max_time, newton, dual_cfl, name=DEFAULT_NAME, start='steady',
-                   snapshot_interval=SNAPSHOT_INTERVAL, field_interval=FIELD_INTERVAL):
+                   snapshot_interval=SNAPSHOT_INTERVAL, field_interval=FIELD_INTERVAL, line_search=0):
     """Return the unsteady input built from the steady input of the given stage."""
     if start not in STARTS:
         raise ValueError('The start is one of {}.'.format(STARTS))
@@ -122,6 +122,11 @@ def unsteady_input(directory, stage, dt, max_time, newton, dual_cfl, name=DEFAUL
                 '      MatrixVectorProduct = FiniteDifference;\n      under Newton {{\n'
                 '         MaxIts = {};\n         FailSafe = AlwaysOn;\n         Eps = 0.001;\n'
                 .format(newton)
+                # Backtracking on each Newton update (contraction 0.5, sufficient decrease 0.25, the
+                # AERO-F defaults): it shortens a step that raises the residual, which the impulsive
+                # start needs, and changes neither the equations nor the converged step.
+                + ('         under LineSearch {{\n            MaxIts = {};\n         }}\n'.format(line_search)
+                   if line_search > 0 else '')
                 + linear.group(1) + '      }\n   }\n}\n')
     replacements = [
         ('Type = Steady;', 'Type = Unsteady;', 1),
@@ -149,7 +154,7 @@ def unsteady_input(directory, stage, dt, max_time, newton, dual_cfl, name=DEFAUL
 
 def prepare(index, dt=DEFAULT_DT, max_time=DEFAULT_MAX_TIME, newton=DEFAULT_NEWTON,
             dual_cfl=DEFAULT_DUAL_CFL, name=DEFAULT_NAME, start='steady',
-            snapshot_interval=SNAPSHOT_INTERVAL, field_interval=FIELD_INTERVAL):
+            snapshot_interval=SNAPSHOT_INTERVAL, field_interval=FIELD_INTERVAL, line_search=0):
     """Write the unsteady input of one converged or accepted training HDM."""
     settings = campaign.configure_settings()
     point = campaign.read_manifest()['points'][index - 1]
@@ -166,7 +171,7 @@ def prepare(index, dt=DEFAULT_DT, max_time=DEFAULT_MAX_TIME, newton=DEFAULT_NEWT
     if target.exists():
         raise RuntimeError('{} exists; refusing to overwrite an unsteady run.'.format(target))
     text = unsteady_input(directory, stage, dt, max_time, newton, dual_cfl, name, start,
-                          snapshot_interval, field_interval)
+                          snapshot_interval, field_interval, line_search)
     for folder in ('results', 'postpro', 'references', 'snapshots'):
         (target / folder).mkdir(parents=True)
     (target / 'input').write_text(text)
@@ -175,6 +180,7 @@ def prepare(index, dt=DEFAULT_DT, max_time=DEFAULT_MAX_TIME, newton=DEFAULT_NEWT
         'start': str(solution.parent / 'Solution.bin') if start == 'steady' else 'freestream (uniform inlet state)',
         'template': 'input{}'.format(stage),
         'snapshot_interval': snapshot_interval, 'field_interval': field_interval,
+        'line_search_iterations': line_search,
         'name': name, 'time_step': dt, 'max_time': max_time, 'newton_iterations': newton,
         'dual_time_cfl': dual_cfl if dual_cfl > 0 else None,
         'convective_time': 1.0 / (point[0] * SPEED_OF_SOUND),
@@ -532,10 +538,12 @@ def main():
     parser.add_argument('--field-interval', type=float, default=FIELD_INTERVAL,
                         help='physical time between field outputs (s), a multiple of dt')
     parser.add_argument('--names', help='for transient, comma-separated run folders (default: --name)')
+    parser.add_argument('--line-search', type=int, default=0,
+                        help='backtracking steps per Newton update (0: none, the default)')
     args = parser.parse_args()
     if args.mode == 'prepare':
         prepare(args.run_index, args.dt, args.max_time, args.newton, args.dual_cfl, args.name, args.start,
-                args.snapshot_interval, args.field_interval)
+                args.snapshot_interval, args.field_interval, args.line_search)
     elif args.mode == 'transient':
         transient(args.run_index, (args.names or args.name).split(','))
     elif args.mode == 'run':
