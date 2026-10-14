@@ -27,7 +27,9 @@ The branch mode starts a new run from the restart files a phase of another run s
 With --adaptive, prepare lets AERO-F choose each step (TimeStepAdaptation = ErrorEstimation): the
 first from Cfl0 on the smallest cells, the next ones from an estimate of the time error against
 ErrorTol (DistTimeState::computeTimeStep). Such a run cannot be continued: after a restart the
-error estimate starts at zero.
+error estimate starts at zero. AERO-F 069ef9d8 neither shortens a step redone there after a
+non-physical solution nor caps the step; aerof-patches/0002 does both (--max-dt, TimeStepMax),
+and the sbatch runs that build when AEROF_UNSTEADY names it.
 
 The transient mode follows the upper-surface shock frame by frame and compares the runs with
 the steady HDM.
@@ -126,7 +128,8 @@ def unsteady_input(directory, stage, dt, max_time, newton, dual_cfl, name=DEFAUL
                    newton_tol=DEFAULT_NEWTON_TOL):
     """Return the unsteady input built from the steady input of the given stage.
 
-    adaptive, if given, holds error_tol, cfl0, cfl_min and snapshot_steps, and replaces the fixed dt."""
+    adaptive, if given, holds error_tol, cfl0, cfl_min, snapshot_steps and max_dt (TimeStepMax, which
+    needs aerof-patches/0002), and replaces the fixed dt."""
     if start not in STARTS:
         raise ValueError('The start is one of {}.'.format(STARTS))
     for interval in (snapshot_interval, field_interval) if not adaptive else ():
@@ -149,10 +152,10 @@ def unsteady_input(directory, stage, dt, max_time, newton, dual_cfl, name=DEFAUL
     dual = ('   DualTimeStepping = On;\n   DualTimeCfl = {:g};\n'.format(dual_cfl)) if dual_cfl > 0 else ''
     if adaptive:
         # The first step comes from Cfl0 (TsDesc::computeTimeStep at it = 1), the smallest from CflMin.
-        stepping = ('   TimeStepAdaptation = ErrorEstimation;\n   ErrorTol = {:g};\n   MaxTime = {:g};\n'
-                    '   MaxIts = {};\n   Eps = 1e-14;\n   under CflLaw {{\n      Cfl0 = {:g};\n      CflMin = {:g};\n'
-                    '   }}\n'.format(adaptive['error_tol'], max_time, ADAPTIVE_MAX_ITS, adaptive['cfl0'],
-                                   adaptive['cfl_min']))
+        stepping = ('   TimeStepAdaptation = ErrorEstimation;\n   ErrorTol = {:g};\n'.format(adaptive['error_tol'])
+                    + ('   TimeStepMax = {:g};\n'.format(adaptive['max_dt']) if adaptive.get('max_dt') else '')
+                    + '   MaxTime = {:g};\n   MaxIts = {};\n   Eps = 1e-14;\n   under CflLaw {{\n      Cfl0 = {:g};\n'
+                    '      CflMin = {:g};\n   }}\n'.format(max_time, ADAPTIVE_MAX_ITS, adaptive['cfl0'], adaptive['cfl_min']))
         snapshot_steps = adaptive.get('snapshot_steps') or ADAPTIVE_SNAPSHOT_STEPS
     else:
         stepping = ('   TimeStep = {:g};\n   MaxTime = {:g};\n   MaxIts = {};\n   Eps = 1e-14;\n'
@@ -222,7 +225,7 @@ def prepare(index, dt=DEFAULT_DT, max_time=DEFAULT_MAX_TIME, newton=DEFAULT_NEWT
         'start': str(solution.parent / 'Solution.bin') if start == 'steady' else 'freestream (uniform inlet state)',
         'template': 'input{}'.format(stage),
         'snapshot_interval': None if adaptive else snapshot_interval, 'field_interval': field_interval,
-        'adaptive': adaptive,
+        'adaptive': adaptive, 'aerof': os.environ.get('AEROF'),
         'name': name, 'time_step': dt, 'max_time': max_time, 'newton_iterations': newton,
         'newton_tolerance': newton_tol, 'dual_time_cfl': dual_cfl if dual_cfl > 0 else None,
         'convective_time': 1.0 / (point[0] * SPEED_OF_SOUND),
@@ -381,6 +384,10 @@ def run(index, name=DEFAULT_NAME):
     if (target / phase['log']).exists():
         raise RuntimeError('{} exists; refusing to rerun.'.format(target / phase['log']))
     projection.run_aerof(settings, target / phase['input'], target / phase['log'])
+    # AERO-F ends with exit code 0 even when it aborts ("Cannot further reduce ... Aborting.").
+    aborted = [line for line in (target / phase['log']).read_text().splitlines() if 'Aborting' in line]
+    if aborted:
+        raise RuntimeError('AERO-F aborted ({}); see {}.'.format(aborted[-1].strip(), target / phase['log']))
     print('Completed {} of the unsteady run of HDM {:03d}.'.format(phase['input'], index))
 
 
@@ -767,6 +774,8 @@ def main():
                             DEFAULT_NEWTON_TOL))
     parser.add_argument('--cfl0', type=float, default=1.0, help='for --adaptive, the CFL of the first step')
     parser.add_argument('--cfl-min', type=float, help='for --adaptive, the CFL of the smallest step (default cfl0/100)')
+    parser.add_argument('--max-dt', type=float,
+                        help='for --adaptive, the largest step (s); needs the AERO-F of aerof-patches/0002')
     parser.add_argument('--snapshot-steps', type=int, default=ADAPTIVE_SNAPSHOT_STEPS,
                         help='for --adaptive, steps between state snapshots (default {})'.format(ADAPTIVE_SNAPSHOT_STEPS))
     args = parser.parse_args()
@@ -778,7 +787,7 @@ def main():
                 parser.error('--adaptive needs --error-tol')
             adaptive = {'error_tol': args.error_tol, 'cfl0': args.cfl0,
                         'cfl_min': args.cfl_min if args.cfl_min else args.cfl0 / 100.0,
-                        'snapshot_steps': args.snapshot_steps}
+                        'snapshot_steps': args.snapshot_steps, 'max_dt': args.max_dt}
         prepare(args.run_index, args.dt or DEFAULT_DT, args.max_time, args.newton or DEFAULT_NEWTON, dual_cfl,
                 args.name, args.start, args.snapshot_interval or SNAPSHOT_INTERVAL, args.field_interval, adaptive,
                 args.newton_tol or DEFAULT_NEWTON_TOL)

@@ -40,7 +40,9 @@ module load cmake/3.24.2 gcc/10.1.0 openmpi/4.1.2 imkl/2019
 source /scratch/users/sadpr/Code3Aug/miniconda3/etc/profile.d/conda.sh
 conda activate GreedyAEROF
 
-export AEROF=/scratch/users/sadpr/Code3Aug/aero-f/build-scalapack/bin/aerof.opt
+# The production build, unless AEROF_UNSTEADY names a patched one (aerof-patches/0002 for --max-dt
+# and for shortening a redone adaptive step). The .env file below records the one used.
+export AEROF=${AEROF_UNSTEADY:-/scratch/users/sadpr/Code3Aug/aero-f/build-scalapack/bin/aerof.opt}
 export MPI=srun
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
