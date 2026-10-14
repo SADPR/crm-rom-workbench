@@ -126,7 +126,7 @@ def unsteady_input(directory, stage, dt, max_time, newton, dual_cfl, name=DEFAUL
                    newton_tol=DEFAULT_NEWTON_TOL):
     """Return the unsteady input built from the steady input of the given stage.
 
-    adaptive, if given, holds error_tol, cfl0 and cfl_min, and replaces the fixed dt."""
+    adaptive, if given, holds error_tol, cfl0, cfl_min and snapshot_steps, and replaces the fixed dt."""
     if start not in STARTS:
         raise ValueError('The start is one of {}.'.format(STARTS))
     for interval in (snapshot_interval, field_interval) if not adaptive else ():
@@ -153,7 +153,7 @@ def unsteady_input(directory, stage, dt, max_time, newton, dual_cfl, name=DEFAUL
                     '   MaxIts = {};\n   Eps = 1e-14;\n   under CflLaw {{\n      Cfl0 = {:g};\n      CflMin = {:g};\n'
                     '   }}\n'.format(adaptive['error_tol'], max_time, ADAPTIVE_MAX_ITS, adaptive['cfl0'],
                                    adaptive['cfl_min']))
-        snapshot_steps = ADAPTIVE_SNAPSHOT_STEPS
+        snapshot_steps = adaptive.get('snapshot_steps') or ADAPTIVE_SNAPSHOT_STEPS
     else:
         stepping = ('   TimeStep = {:g};\n   MaxTime = {:g};\n   MaxIts = {};\n   Eps = 1e-14;\n'
                     .format(dt, max_time, int(round(max_time / dt)) + EXTRA_STEPS))
@@ -767,6 +767,8 @@ def main():
                             DEFAULT_NEWTON_TOL))
     parser.add_argument('--cfl0', type=float, default=1.0, help='for --adaptive, the CFL of the first step')
     parser.add_argument('--cfl-min', type=float, help='for --adaptive, the CFL of the smallest step (default cfl0/100)')
+    parser.add_argument('--snapshot-steps', type=int, default=ADAPTIVE_SNAPSHOT_STEPS,
+                        help='for --adaptive, steps between state snapshots (default {})'.format(ADAPTIVE_SNAPSHOT_STEPS))
     args = parser.parse_args()
     dual_cfl = DEFAULT_DUAL_CFL if args.dual_cfl is None else args.dual_cfl
     if args.mode == 'prepare':
@@ -775,7 +777,8 @@ def main():
             if not args.error_tol:
                 parser.error('--adaptive needs --error-tol')
             adaptive = {'error_tol': args.error_tol, 'cfl0': args.cfl0,
-                        'cfl_min': args.cfl_min if args.cfl_min else args.cfl0 / 100.0}
+                        'cfl_min': args.cfl_min if args.cfl_min else args.cfl0 / 100.0,
+                        'snapshot_steps': args.snapshot_steps}
         prepare(args.run_index, args.dt or DEFAULT_DT, args.max_time, args.newton or DEFAULT_NEWTON, dual_cfl,
                 args.name, args.start, args.snapshot_interval or SNAPSHOT_INTERVAL, args.field_interval, adaptive,
                 args.newton_tol or DEFAULT_NEWTON_TOL)
