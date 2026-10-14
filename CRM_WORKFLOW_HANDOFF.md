@@ -1480,6 +1480,15 @@ Two follow-ups:
     - there is no maximum dt;
     - the run cannot be continued, because the error estimate starts at zero after a restart.
 
+Update 2026-10-14:
+
+- The first two caveats are fixed by `aerof-patches/0002`, used through `AEROF_UNSTEADY`, together
+  with `--max-dt`.
+- Agreed for later adaptive runs: add `CheckNewton = On` under `Time`. A step whose Newton reaches
+  `MaxIts` without converging is then redone, at half the step size with 0002.
+- The runs named `unsteady-adaptive-fix` (137, 032, 001) run without it, for comparison. 137 had
+  3 such steps out of 1,620: at 5.3 and 6.8-6.9 c/U, dt ~4e-4, with drops of 5-10× instead of 100×.
+
 ## 17. Yihong's answers (2026-09-25) and open questions
 
 His answers:
