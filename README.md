@@ -1,9 +1,12 @@
 # NACA 5D ROM workbench
 
 Research workspace for the parametric 2D NACA 4-digit airfoil ROM benchmark built
-on AERO-F. The initial import preserves the supplied `greedy-procedure`
-workflow and its local `pyaeroopt` dependency as source code, without
-importing the prior Git history.
+on AERO-F.
+
+**This public copy holds only my own scripts and notes.** The code of the Farhat Research Group
+they build on is not included: the supplied `greedy-procedure` workflow (`runs.py`, `setup.py`,
+...), the `pyaeroopt` interface, and my patches to AERO-F. The scripts therefore do not run from
+this copy alone.
 
 **Naming.** The case is a parametric 2D NACA 4-digit airfoil, not the NASA Common Research Model
 (CRM). "crm" survives only where renaming would break things: the repository name
@@ -17,14 +20,10 @@ data live, the campaign history, and the current plan.
 
 ## Layout
 
-- `greedy-procedure/`: supplied greedy HDM/ROM/HROM workflow and our isolated
-  campaign drivers.
-- `pyaeroopt/`: local Python interface for FRG tools.
+- `greedy-procedure/`: our campaign drivers (`sobol5d_*.py`, `submit_sobol5d_*`).
 - `docs/history/`: superseded plans and records of earlier campaigns.
 - `mesh/`: required NACA mesh input, deliberately not versioned.
 
-`greedy-procedure/mesh` is a relative link to `../mesh`; therefore the mesh
-must be installed at the repository root.
 
 ## Mesh data
 
@@ -36,6 +35,5 @@ publish it unless its redistribution terms are confirmed.
 
 ## Dependencies
 
-`greedy-procedure/README_LaplaceShift.txt` describes the Laplace-shift
-environment. `pyaeroopt/README.md` lists the FRG executables expected in the
-environment.
+AERO-F, sower, xp2exo and the FRG `pyaeroopt` interface, with the supplied greedy-procedure
+workflow; none of them is part of this copy.
