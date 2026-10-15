@@ -125,8 +125,12 @@ def run_folder(name):
 
 def unsteady_input(directory, stage, dt, max_time, newton, dual_cfl, name=DEFAULT_NAME, start='steady',
                    snapshot_interval=SNAPSHOT_INTERVAL, field_interval=FIELD_INTERVAL, adaptive=None,
-                   newton_tol=DEFAULT_NEWTON_TOL):
+                   newton_tol=DEFAULT_NEWTON_TOL, clipping=None, check_newton=False):
     """Return the unsteady input built from the steady input of the given stage.
+
+    clipping resets negative turbulence values each step (None, AbsoluteValue, Freestream or CutOff);
+    check_newton redoes a step whose Newton reaches MaxIts unconverged, which under --adaptive needs
+    aerof-patches/0002 to shorten it.
 
     adaptive, if given, holds error_tol, cfl0, cfl_min, snapshot_steps and max_dt (TimeStepMax, which
     needs aerof-patches/0002), and replaces the fixed dt."""
@@ -161,8 +165,10 @@ def unsteady_input(directory, stage, dt, max_time, newton, dual_cfl, name=DEFAUL
         stepping = ('   TimeStep = {:g};\n   MaxTime = {:g};\n   MaxIts = {};\n   Eps = 1e-14;\n'
                     .format(dt, max_time, int(round(max_time / dt)) + EXTRA_STEPS))
         snapshot_steps = steps(snapshot_interval, dt)
+    guards = (('   Clipping = {};\n'.format(clipping) if clipping else '')
+              + ('   CheckNewton = On;\n' if check_newton else ''))
     new_time = ('\nunder Time {\n   Form = NonDescriptor;\n   Type = Implicit;\n   TypeTimeStep = Global;\n'
-                + stepping + dual
+                + stepping + guards + dual
                 + '   under Implicit {{\n      Type = ThreePointBackwardDifference;\n'
                 '      MatrixVectorProduct = FiniteDifference;\n      under Newton {{\n'
                 '         MaxIts = {};\n         FailSafe = AlwaysOn;\n         Eps = {:g};\n'
@@ -198,7 +204,7 @@ def unsteady_input(directory, stage, dt, max_time, newton, dual_cfl, name=DEFAUL
 def prepare(index, dt=DEFAULT_DT, max_time=DEFAULT_MAX_TIME, newton=DEFAULT_NEWTON,
             dual_cfl=DEFAULT_DUAL_CFL, name=DEFAULT_NAME, start='steady',
             snapshot_interval=SNAPSHOT_INTERVAL, field_interval=FIELD_INTERVAL, adaptive=None,
-            newton_tol=DEFAULT_NEWTON_TOL):
+            newton_tol=DEFAULT_NEWTON_TOL, clipping=None, check_newton=False):
     """Write the unsteady input of one converged or accepted training HDM."""
     settings = campaign.configure_settings()
     point = campaign.read_manifest()['points'][index - 1]
@@ -215,7 +221,7 @@ def prepare(index, dt=DEFAULT_DT, max_time=DEFAULT_MAX_TIME, newton=DEFAULT_NEWT
     if target.exists():
         raise RuntimeError('{} exists; refusing to overwrite an unsteady run.'.format(target))
     text = unsteady_input(directory, stage, dt, max_time, newton, dual_cfl, name, start,
-                          snapshot_interval, field_interval, adaptive, newton_tol)
+                          snapshot_interval, field_interval, adaptive, newton_tol, clipping, check_newton)
     dt = None if adaptive else dt
     for folder in ('results', 'postpro', 'references', 'snapshots'):
         (target / folder).mkdir(parents=True)
@@ -228,6 +234,7 @@ def prepare(index, dt=DEFAULT_DT, max_time=DEFAULT_MAX_TIME, newton=DEFAULT_NEWT
         'adaptive': adaptive, 'aerof': os.environ.get('AEROF'),
         'name': name, 'time_step': dt, 'max_time': max_time, 'newton_iterations': newton,
         'newton_tolerance': newton_tol, 'dual_time_cfl': dual_cfl if dual_cfl > 0 else None,
+        'clipping': clipping, 'check_newton': check_newton,
         'convective_time': 1.0 / (point[0] * SPEED_OF_SOUND),
         'phases': [{'input': 'input', 'log': 'log', 'start_iteration': 0, 'start_time': 0.0,
                     'time_step': dt, 'max_time': max_time, 'newton_iterations': newton}],
@@ -774,6 +781,11 @@ def main():
                             DEFAULT_NEWTON_TOL))
     parser.add_argument('--cfl0', type=float, default=1.0, help='for --adaptive, the CFL of the first step')
     parser.add_argument('--cfl-min', type=float, help='for --adaptive, the CFL of the smallest step (default cfl0/100)')
+    parser.add_argument('--clipping', choices=('None', 'AbsoluteValue', 'Freestream', 'CutOff'),
+                        help='for prepare, reset negative turbulence values each step (AERO-F default: None)')
+    parser.add_argument('--check-newton', action='store_true',
+                        help='for prepare, redo a step whose Newton does not converge (with --adaptive, needs '
+                             'the AERO-F of aerof-patches/0002)')
     parser.add_argument('--max-dt', type=float,
                         help='for --adaptive, the largest step (s); needs the AERO-F of aerof-patches/0002')
     parser.add_argument('--snapshot-steps', type=int, default=ADAPTIVE_SNAPSHOT_STEPS,
@@ -790,7 +802,7 @@ def main():
                         'snapshot_steps': args.snapshot_steps, 'max_dt': args.max_dt}
         prepare(args.run_index, args.dt or DEFAULT_DT, args.max_time, args.newton or DEFAULT_NEWTON, dual_cfl,
                 args.name, args.start, args.snapshot_interval or SNAPSHOT_INTERVAL, args.field_interval, adaptive,
-                args.newton_tol or DEFAULT_NEWTON_TOL)
+                args.newton_tol or DEFAULT_NEWTON_TOL, args.clipping, args.check_newton)
     elif args.mode == 'continue':
         continue_run(args.run_index, args.name, args.dt or DEFAULT_DT, args.max_time, args.newton,
                      args.snapshot_interval)
